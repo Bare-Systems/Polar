@@ -92,7 +92,7 @@ Polar must be deployable in unattended environments and engineered for productio
 - [x] `GET /v1/capabilities`
 - [x] `GET /v1/station/health`
 - [x] `GET /v1/readings/latest`
-- [ ] `GET /v1/readings?metric=&from=&to=&resolution=`
+- [x] `GET /v1/readings?metric=&from=&to=&resolution=`
 - [x] `GET /v1/forecast/latest`
 - [x] `GET /v1/forecast?from=&to=`
 - [x] `GET /v1/diagnostics/data-gaps`

@@ -29,7 +29,7 @@ MCP health: `GET http://localhost:8081/healthz`
 - `GET /v1/capabilities`
 - `GET /v1/station/health`
 - `GET /v1/readings/latest`
-- `GET /v1/readings?metric=&from=&to=`
+- `GET /v1/readings?metric=&from=&to=&resolution=`
 - `GET /v1/forecast/latest`
 - `GET /v1/forecast?from=&to=`
 - `GET /v1/diagnostics/data-gaps`

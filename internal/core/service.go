@@ -152,6 +152,14 @@ func (s *Service) QueryReadings(ctx context.Context, metric string, from, to tim
 	return s.repo.QueryReadings(ctx, metric, from, to)
 }
 
+func (s *Service) QueryReadingsAtResolution(ctx context.Context, metric string, from, to time.Time, resolution time.Duration) ([]contracts.Reading, error) {
+	readings, err := s.repo.QueryReadings(ctx, metric, from, to)
+	if err != nil || resolution <= 0 {
+		return readings, err
+	}
+	return aggregateReadings(readings, resolution), nil
+}
+
 func (s *Service) LatestForecast(ctx context.Context) (contracts.ForecastSnapshot, error) {
 	snap, err := s.repo.LatestForecast(ctx)
 	if err != nil {
@@ -181,4 +189,40 @@ func (s *Service) DataGaps(ctx context.Context) ([]contracts.DataGap, error) {
 
 func (s *Service) AuditEvents(ctx context.Context, from, to time.Time, eventType string) ([]map[string]any, error) {
 	return s.repo.QueryAudit(ctx, from, to, eventType)
+}
+
+func aggregateReadings(readings []contracts.Reading, resolution time.Duration) []contracts.Reading {
+	if len(readings) == 0 {
+		return readings
+	}
+	type key struct {
+		sensorID string
+		bucket   time.Time
+	}
+	out := make([]contracts.Reading, 0, len(readings))
+	counts := make([]int, 0, len(readings))
+	idxByKey := make(map[key]int, len(readings))
+	for _, rd := range readings {
+		bucket := rd.RecordedAt.UTC().Truncate(resolution)
+		k := key{sensorID: rd.SensorID, bucket: bucket}
+		idx, ok := idxByKey[k]
+		if !ok {
+			aggregated := rd
+			aggregated.RecordedAt = bucket
+			aggregated.QualityFlag = contracts.QualityEstimated
+			out = append(out, aggregated)
+			counts = append(counts, 1)
+			idxByKey[k] = len(out) - 1
+			continue
+		}
+		out[idx].Value += rd.Value
+		counts[idx]++
+		if rd.ReceivedAt.After(out[idx].ReceivedAt) {
+			out[idx].ReceivedAt = rd.ReceivedAt
+		}
+	}
+	for i := range out {
+		out[i].Value /= float64(counts[i])
+	}
+	return out
 }

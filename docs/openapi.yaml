@@ -51,6 +51,11 @@ paths:
           schema:
             type: string
             format: date-time
+        - in: query
+          name: resolution
+          schema:
+            type: string
+          description: Optional Go duration for downsampling (for example 5m, 1h)
       responses:
         '200':
           description: Historical readings

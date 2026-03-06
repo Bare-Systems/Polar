@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -71,12 +72,17 @@ func (s *Server) queryReadings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "metric is required"})
 		return
 	}
+	resolution, err := parseResolution(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
 	from, to, err := parseRange(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	readings, err := s.svc.QueryReadings(r.Context(), metric, from, to)
+	readings, err := s.svc.QueryReadingsAtResolution(r.Context(), metric, from, to, resolution)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -136,6 +142,21 @@ func parseRange(r *http.Request) (time.Time, time.Time, error) {
 		return time.Time{}, time.Time{}, err
 	}
 	return from, to, nil
+}
+
+func parseResolution(r *http.Request) (time.Duration, error) {
+	raw := r.URL.Query().Get("resolution")
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, errors.New("resolution must be > 0")
+	}
+	return d, nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, payload any) {
