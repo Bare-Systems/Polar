@@ -1,0 +1,16 @@
+[Unit]
+Description=Polar environmental monitoring service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/polar
+ExecStart=/opt/polar/polar -config /etc/polar/config.json
+Restart=always
+RestartSec=3
+User=polar
+Group=polar
+Environment=POLAR_SERVICE_TOKEN=replace-me
+
+[Install]
+WantedBy=multi-user.target

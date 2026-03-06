@@ -1,0 +1,5 @@
+/bin/
+/polar.db
+*.out
+.DS_Store
+.gocache/

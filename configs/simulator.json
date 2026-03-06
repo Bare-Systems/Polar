@@ -1,0 +1,29 @@
+{
+  "profile": "simulator",
+  "station": {
+    "id": "polar-dev",
+    "latitude": 40.7128,
+    "longitude": -74.0060
+  },
+  "server": {
+    "listen_addr": ":8080",
+    "mcp_listen_addr": ":8081"
+  },
+  "storage": {
+    "sqlite_path": "./polar.db"
+  },
+  "auth": {
+    "service_token": "dev-token"
+  },
+  "features": {
+    "enable_forecast": true,
+    "enable_mcp": true
+  },
+  "polling": {
+    "sensor_interval": 10000000000,
+    "forecast_interval": 1800000000000
+  },
+  "provider": {
+    "open_meteo_url": "https://api.open-meteo.com/v1/forecast"
+  }
+}

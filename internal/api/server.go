@@ -1,0 +1,135 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"polar/internal/auth"
+	"polar/internal/config"
+	"polar/internal/core"
+)
+
+type Server struct {
+	cfg   config.Config
+	svc   *core.Service
+	authz *auth.Auth
+}
+
+func NewServer(cfg config.Config, svc *core.Service, authz *auth.Auth) *Server {
+	return &Server{cfg: cfg, svc: svc, authz: authz}
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.health)
+	mux.Handle("/v1/capabilities", s.authz.Middleware(http.HandlerFunc(s.capabilities)))
+	mux.Handle("/v1/station/health", s.authz.Middleware(http.HandlerFunc(s.stationHealth)))
+	mux.Handle("/v1/readings/latest", s.authz.Middleware(http.HandlerFunc(s.readingsLatest)))
+	mux.Handle("/v1/readings", s.authz.Middleware(http.HandlerFunc(s.queryReadings)))
+	mux.Handle("/v1/forecast/latest", s.authz.Middleware(http.HandlerFunc(s.forecastLatest)))
+	mux.Handle("/v1/forecast", s.authz.Middleware(http.HandlerFunc(s.forecastLatest)))
+	mux.Handle("/v1/diagnostics/data-gaps", s.authz.Middleware(http.HandlerFunc(s.dataGaps)))
+	mux.Handle("/v1/audit/events", s.authz.Middleware(http.HandlerFunc(s.auditEvents)))
+	return mux
+}
+
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.Capabilities())
+}
+
+func (s *Server) stationHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.StationHealth())
+}
+
+func (s *Server) readingsLatest(w http.ResponseWriter, r *http.Request) {
+	readings, err := s.svc.LatestReadings(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, readings)
+}
+
+func (s *Server) queryReadings(w http.ResponseWriter, r *http.Request) {
+	metric := r.URL.Query().Get("metric")
+	if metric == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "metric is required"})
+		return
+	}
+	from, to, err := parseRange(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	readings, err := s.svc.QueryReadings(r.Context(), metric, from, to)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, readings)
+}
+
+func (s *Server) forecastLatest(w http.ResponseWriter, r *http.Request) {
+	forecast, err := s.svc.LatestForecast(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, forecast)
+}
+
+func (s *Server) dataGaps(w http.ResponseWriter, r *http.Request) {
+	gaps, err := s.svc.DataGaps(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, gaps)
+}
+
+func (s *Server) auditEvents(w http.ResponseWriter, r *http.Request) {
+	from, to, err := parseRange(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	eventType := r.URL.Query().Get("type")
+	events, err := s.svc.AuditEvents(r.Context(), from, to, eventType)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+func parseRange(r *http.Request) (time.Time, time.Time, error) {
+	now := time.Now().UTC()
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+	if fromStr == "" {
+		fromStr = now.Add(-1 * time.Hour).Format(time.RFC3339)
+	}
+	if toStr == "" {
+		toStr = now.Format(time.RFC3339)
+	}
+	from, err := time.Parse(time.RFC3339, fromStr)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	to, err := time.Parse(time.RFC3339, toStr)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	return from, to, nil
+}
+
+func writeJSON(w http.ResponseWriter, code int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(payload)
+}
