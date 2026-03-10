@@ -8,6 +8,7 @@ import (
 	"polar/internal/auth"
 	"polar/internal/config"
 	"polar/internal/core"
+	"polar/pkg/contracts"
 )
 
 type Server struct {
@@ -129,6 +130,7 @@ func rpcErr(code int, msg string) map[string]any {
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Polar-Schema", contracts.SchemaVersion)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }

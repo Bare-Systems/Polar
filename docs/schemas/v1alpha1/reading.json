@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polar/schemas/v1alpha1/reading.json",
+  "title": "Reading",
+  "description": "A single sensor reading from a Polar station.",
+  "type": "object",
+  "required": ["station_id", "sensor_id", "metric", "value", "unit", "source", "quality_flag", "recorded_at", "received_at"],
+  "additionalProperties": false,
+  "properties": {
+    "station_id": {
+      "type": "string",
+      "description": "Unique identifier for the station that produced this reading."
+    },
+    "sensor_id": {
+      "type": "string",
+      "description": "Unique identifier for the sensor within the station."
+    },
+    "metric": {
+      "type": "string",
+      "description": "Metric name.",
+      "enum": ["temperature", "humidity", "light", "wind_speed", "pressure", "rainfall"]
+    },
+    "value": {
+      "type": "number",
+      "description": "Measured value in the canonical unit for this metric."
+    },
+    "unit": {
+      "type": "string",
+      "description": "Canonical SI unit string.",
+      "examples": ["C", "%", "lux", "m/s", "hPa", "mm"]
+    },
+    "source": {
+      "type": "string",
+      "description": "Data source identifier (e.g. 'simulator', 'i2c:0x48')."
+    },
+    "quality_flag": {
+      "type": "string",
+      "description": "Quality assessment of the reading.",
+      "enum": ["good", "estimated", "outlier", "unavailable"]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the sensor recorded the value."
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the ingestion pipeline received the value."
+    }
+  }
+}

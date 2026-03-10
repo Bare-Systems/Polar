@@ -83,7 +83,7 @@ func (s *Service) PullForecast(ctx context.Context) error {
 func (s *Service) Capabilities() contracts.CapabilityDescriptor {
 	return contracts.CapabilityDescriptor{
 		StationID:           s.cfg.Station.ID,
-		SupportedMetrics:    []string{"temperature", "humidity", "light", "wind_speed", "pressure", "rainfall"},
+		SupportedMetrics:    contracts.SupportedMetrics(),
 		SupportsForecast:    s.cfg.Features.EnableForecast,
 		SupportsCalibration: false,
 		MinSamplingSeconds:  1,

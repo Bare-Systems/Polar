@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,25 +18,31 @@ import (
 	"polar/internal/config"
 	"polar/internal/core"
 	"polar/internal/mcp"
+	"polar/internal/obs"
 	"polar/internal/providers"
 	"polar/internal/storage"
 )
 
 func main() {
+	logger := obs.Default
+
 	cfg, err := config.Load(os.Args[1:])
 	if err != nil {
-		log.Fatalf("config load failed: %v", err)
+		logger.Error("config load failed", "err", err)
+		os.Exit(1)
 	}
 
 	db, err := sql.Open("sqlite", cfg.Storage.SQLitePath)
 	if err != nil {
-		log.Fatalf("sqlite open failed: %v", err)
+		logger.Error("sqlite open failed", "err", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 
 	repo := storage.NewRepository(db)
 	if err := repo.Migrate(context.Background()); err != nil {
-		log.Fatalf("migrate failed: %v", err)
+		logger.Error("migrate failed", "err", err)
+		os.Exit(1)
 	}
 
 	collectorSvc := collector.NewSimulatorService(cfg)
@@ -56,7 +61,7 @@ func main() {
 
 	errCh := make(chan error, 2)
 	go func() {
-		log.Printf("REST listening on %s", cfg.Server.ListenAddr)
+		logger.Info("REST listening", "addr", cfg.Server.ListenAddr)
 		errCh <- apiHTTP.ListenAndServe()
 	}()
 
@@ -64,7 +69,7 @@ func main() {
 	if cfg.Features.EnableMCP {
 		mcpHTTP = &http.Server{Addr: cfg.Server.MCPListenAddr, Handler: mcpServer.Handler()}
 		go func() {
-			log.Printf("MCP listening on %s", cfg.Server.MCPListenAddr)
+			logger.Info("MCP listening", "addr", cfg.Server.MCPListenAddr)
 			errCh <- mcpHTTP.ListenAndServe()
 		}()
 	}
@@ -74,10 +79,10 @@ func main() {
 
 	select {
 	case sig := <-sigCh:
-		log.Printf("signal received: %s", sig)
+		logger.Info("signal received, shutting down", "signal", sig.String())
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("server failed: %v", err)
+			logger.Error("server failed", "err", err)
 		}
 	}
 

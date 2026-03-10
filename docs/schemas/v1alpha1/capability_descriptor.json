@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polar/schemas/v1alpha1/capability_descriptor.json",
+  "title": "CapabilityDescriptor",
+  "description": "Describes the metrics and constraints supported by a Polar station.",
+  "type": "object",
+  "required": ["station_id", "supported_metrics", "supports_forecast", "supports_calibration", "min_sampling_seconds", "max_sampling_seconds"],
+  "additionalProperties": false,
+  "properties": {
+    "station_id": {
+      "type": "string"
+    },
+    "supported_metrics": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["temperature", "humidity", "light", "wind_speed", "pressure", "rainfall"]
+      }
+    },
+    "supports_forecast": {
+      "type": "boolean"
+    },
+    "supports_calibration": {
+      "type": "boolean"
+    },
+    "min_sampling_seconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_sampling_seconds": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

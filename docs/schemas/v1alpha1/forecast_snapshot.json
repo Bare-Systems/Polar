@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polar/schemas/v1alpha1/forecast_snapshot.json",
+  "title": "ForecastSnapshot",
+  "description": "A timestamped weather forecast snapshot from a provider.",
+  "type": "object",
+  "required": ["station_id", "provider", "latitude", "longitude", "fetched_at", "points", "stale"],
+  "additionalProperties": false,
+  "properties": {
+    "station_id": {
+      "type": "string",
+      "description": "Station this forecast is anchored to."
+    },
+    "provider": {
+      "type": "string",
+      "description": "Forecast provider identifier (e.g. 'open-meteo')."
+    },
+    "latitude": {
+      "type": "number",
+      "description": "Latitude of the forecast location."
+    },
+    "longitude": {
+      "type": "number",
+      "description": "Longitude of the forecast location."
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when this snapshot was fetched from the provider."
+    },
+    "stale": {
+      "type": "boolean",
+      "description": "True if the forecast could not be refreshed within the expected interval."
+    },
+    "points": {
+      "type": "array",
+      "description": "Ordered list of forecast data points.",
+      "items": {
+        "$ref": "#/$defs/ForecastPoint"
+      }
+    }
+  },
+  "$defs": {
+    "ForecastPoint": {
+      "type": "object",
+      "required": ["time", "temperature_c", "humidity_pct", "wind_speed_ms", "precip_mm"],
+      "additionalProperties": false,
+      "properties": {
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "temperature_c": {
+          "type": "number",
+          "description": "Air temperature in degrees Celsius."
+        },
+        "humidity_pct": {
+          "type": "number",
+          "description": "Relative humidity as a percentage (0–100)."
+        },
+        "wind_speed_ms": {
+          "type": "number",
+          "description": "Wind speed in metres per second."
+        },
+        "precip_mm": {
+          "type": "number",
+          "description": "Precipitation in millimetres."
+        }
+      }
+    }
+  }
+}

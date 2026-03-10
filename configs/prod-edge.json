@@ -1,0 +1,29 @@
+{
+  "profile": "prod-edge",
+  "station": {
+    "id": "polar-prod-01",
+    "latitude": 40.7128,
+    "longitude": -74.0060
+  },
+  "server": {
+    "listen_addr": "127.0.0.1:8080",
+    "mcp_listen_addr": "127.0.0.1:8081"
+  },
+  "storage": {
+    "sqlite_path": "/var/lib/polar/polar.db"
+  },
+  "auth": {
+    "service_token": "${POLAR_SERVICE_TOKEN}"
+  },
+  "features": {
+    "enable_forecast": true,
+    "enable_mcp": true
+  },
+  "polling": {
+    "sensor_interval": 10000000000,
+    "forecast_interval": 1800000000000
+  },
+  "provider": {
+    "open_meteo_url": "https://api.open-meteo.com/v1/forecast"
+  }
+}

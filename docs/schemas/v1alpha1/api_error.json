@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polar/schemas/v1alpha1/api_error.json",
+  "title": "APIError",
+  "description": "Structured error returned by all REST and MCP error responses.",
+  "type": "object",
+  "required": ["code", "message", "retryable"],
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "type": "string",
+      "description": "Machine-readable error code.",
+      "examples": ["INVALID_PARAM", "UNKNOWN_METRIC", "INVALID_RANGE", "INTERNAL_ERROR", "UNAUTHORIZED"]
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable error description."
+    },
+    "retryable": {
+      "type": "boolean",
+      "description": "True if the caller may retry the request after a backoff."
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "Optional request trace ID for log correlation."
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polar/schemas/v1alpha1/station_health.json",
+  "title": "StationHealth",
+  "description": "Overall health status of the Polar station and its subsystems.",
+  "type": "object",
+  "required": ["station_id", "overall", "components", "generated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "station_id": {
+      "type": "string"
+    },
+    "overall": {
+      "type": "string",
+      "description": "Aggregated health status.",
+      "enum": ["healthy", "degraded", "unhealthy"]
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ComponentHealth"
+      }
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "ComponentHealth": {
+      "type": "object",
+      "required": ["name", "status", "last_success", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Component name (e.g. 'collector', 'storage', 'forecast')."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["healthy", "degraded", "starting", "unhealthy"]
+        },
+        "last_success": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

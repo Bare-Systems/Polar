@@ -9,6 +9,7 @@ import (
 	"polar/internal/auth"
 	"polar/internal/config"
 	"polar/internal/core"
+	"polar/pkg/contracts"
 )
 
 type Server struct {
@@ -60,7 +61,7 @@ func (s *Server) stationHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) readingsLatest(w http.ResponseWriter, r *http.Request) {
 	readings, err := s.svc.LatestReadings(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), true)
 		return
 	}
 	writeJSON(w, http.StatusOK, readings)
@@ -69,22 +70,30 @@ func (s *Server) readingsLatest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) queryReadings(w http.ResponseWriter, r *http.Request) {
 	metric := r.URL.Query().Get("metric")
 	if metric == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "metric is required"})
+		writeErr(w, http.StatusBadRequest, "INVALID_PARAM", "metric is required", false)
+		return
+	}
+	if contracts.UnitFor(metric) == "" {
+		writeErr(w, http.StatusBadRequest, "UNKNOWN_METRIC", "metric not in supported catalog: "+metric, false)
 		return
 	}
 	resolution, err := parseResolution(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "INVALID_PARAM", err.Error(), false)
 		return
 	}
 	from, to, err := parseRange(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "INVALID_PARAM", err.Error(), false)
+		return
+	}
+	if !to.After(from) {
+		writeErr(w, http.StatusBadRequest, "INVALID_RANGE", "to must be after from", false)
 		return
 	}
 	readings, err := s.svc.QueryReadingsAtResolution(r.Context(), metric, from, to, resolution)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), true)
 		return
 	}
 	writeJSON(w, http.StatusOK, readings)
@@ -93,7 +102,7 @@ func (s *Server) queryReadings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) forecastLatest(w http.ResponseWriter, r *http.Request) {
 	forecast, err := s.svc.LatestForecast(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), true)
 		return
 	}
 	writeJSON(w, http.StatusOK, forecast)
@@ -102,7 +111,7 @@ func (s *Server) forecastLatest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dataGaps(w http.ResponseWriter, r *http.Request) {
 	gaps, err := s.svc.DataGaps(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), true)
 		return
 	}
 	writeJSON(w, http.StatusOK, gaps)
@@ -111,13 +120,17 @@ func (s *Server) dataGaps(w http.ResponseWriter, r *http.Request) {
 func (s *Server) auditEvents(w http.ResponseWriter, r *http.Request) {
 	from, to, err := parseRange(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "INVALID_PARAM", err.Error(), false)
+		return
+	}
+	if !to.After(from) {
+		writeErr(w, http.StatusBadRequest, "INVALID_RANGE", "to must be after from", false)
 		return
 	}
 	eventType := r.URL.Query().Get("type")
 	events, err := s.svc.AuditEvents(r.Context(), from, to, eventType)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), true)
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
@@ -161,6 +174,15 @@ func parseResolution(r *http.Request) (time.Duration, error) {
 
 func writeJSON(w http.ResponseWriter, code int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Polar-Schema", contracts.SchemaVersion)
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeErr(w http.ResponseWriter, code int, errCode, message string, retryable bool) {
+	writeJSON(w, code, contracts.APIError{
+		Code:      errCode,
+		Message:   message,
+		Retryable: retryable,
+	})
 }
