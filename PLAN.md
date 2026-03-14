@@ -27,6 +27,15 @@ Polar must be deployable in unattended environments and engineered for productio
 - [x] Single-node runtime first; clustered HA can be phase-2+.
 - [ ] Local durability: SQLite primary + export mechanisms.
 
+## 2.1 Portfolio Alignment (Iteration 3)
+
+This section tracks only the Polar items assigned in `PORTFOLIO-PRIORITY.md`.
+
+- [x] `readyz` endpoint baseline
+- [ ] Auth scope checks on protected routes/tools
+- [ ] Structured metrics for production diagnostics
+- [ ] Forecast staleness and failure semantics for agent consumption
+
 ---
 
 ## 3. Current State (as implemented)

@@ -32,13 +32,16 @@ type ForecastPoint struct {
 }
 
 type ForecastSnapshot struct {
-	StationID string          `json:"station_id"`
-	Provider  string          `json:"provider"`
-	Latitude  float64         `json:"latitude"`
-	Longitude float64         `json:"longitude"`
-	FetchedAt time.Time       `json:"fetched_at"`
-	Points    []ForecastPoint `json:"points"`
-	Stale     bool            `json:"stale"`
+	StationID   string          `json:"station_id"`
+	Provider    string          `json:"provider"`
+	Latitude    float64         `json:"latitude"`
+	Longitude   float64         `json:"longitude"`
+	FetchedAt   time.Time       `json:"fetched_at"`
+	FreshUntil  time.Time       `json:"fresh_until"`
+	Points      []ForecastPoint `json:"points"`
+	Stale       bool            `json:"stale"`
+	StaleReason string          `json:"stale_reason,omitempty"`
+	LastError   string          `json:"last_error,omitempty"`
 }
 
 type CapabilityDescriptor struct {

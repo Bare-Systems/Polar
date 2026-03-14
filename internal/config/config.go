@@ -37,7 +37,14 @@ type StorageConfig struct {
 }
 
 type AuthConfig struct {
-	ServiceToken string `json:"service_token"`
+	ServiceToken string        `json:"service_token"`
+	Tokens       []TokenConfig `json:"tokens"`
+}
+
+type TokenConfig struct {
+	Name   string   `json:"name"`
+	Value  string   `json:"value"`
+	Scopes []string `json:"scopes"`
 }
 
 type FeatureFlags struct {
@@ -121,6 +128,12 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("POLAR_SERVICE_TOKEN"); v != "" {
 		cfg.Auth.ServiceToken = v
 	}
+	if v := os.Getenv("POLAR_AUTH_TOKENS_JSON"); v != "" {
+		var tokens []TokenConfig
+		if err := json.Unmarshal([]byte(v), &tokens); err == nil {
+			cfg.Auth.Tokens = tokens
+		}
+	}
 	if v := os.Getenv("POLAR_ENABLE_FORECAST"); v != "" {
 		cfg.Features.EnableForecast = strings.EqualFold(v, "true")
 	}
@@ -152,8 +165,32 @@ func validate(cfg Config) error {
 	if cfg.Polling.ForecastInterval < time.Minute {
 		return errors.New("polling.forecast_interval must be >= 1m")
 	}
-	if cfg.Auth.ServiceToken == "" {
-		return errors.New("auth.service_token is required")
+	if cfg.Auth.ServiceToken == "" && len(cfg.Auth.Tokens) == 0 {
+		return errors.New("auth.service_token or auth.tokens is required")
+	}
+	validScopes := map[string]struct{}{
+		"read:telemetry": {},
+		"read:forecast":  {},
+		"read:audit":     {},
+		"admin:config":   {},
+		"*":              {},
+	}
+	for i, token := range cfg.Auth.Tokens {
+		if token.Name == "" {
+			return errors.New("auth.tokens[" + strconv.Itoa(i) + "].name is required")
+		}
+		if token.Value == "" {
+			return errors.New("auth.tokens[" + strconv.Itoa(i) + "].value is required")
+		}
+		if len(token.Scopes) == 0 {
+			return errors.New("auth.tokens[" + strconv.Itoa(i) + "].scopes is required")
+		}
+		for _, scope := range token.Scopes {
+			scope = strings.TrimSpace(scope)
+			if _, ok := validScopes[scope]; !ok {
+				return errors.New("auth.tokens[" + strconv.Itoa(i) + "].scopes contains unknown scope: " + scope)
+			}
+		}
 	}
 	return nil
 }

@@ -48,7 +48,10 @@ func main() {
 	defer runCancel()
 	go svc.RunSchedulers(runCtx)
 
-	authz := auth.New(cfg.Auth.ServiceToken)
+	authz := auth.NewFromConfig(cfg.Auth)
+	authz.SetFailureHook(func(_ int) {
+		svc.RecordAuthFailure()
+	})
 	apiServer := api.NewServer(cfg, svc, authz)
 	mcpServer := mcp.NewServer(cfg, svc, authz)
 

@@ -18,6 +18,14 @@ paths:
       responses:
         '200':
           description: ok
+  /readyz:
+    get:
+      security: []
+      responses:
+        '200':
+          description: Ready
+        '503':
+          description: Not ready
   /v1/capabilities:
     get:
       responses:
@@ -89,3 +97,8 @@ paths:
       responses:
         '200':
           description: Audit events
+  /v1/metrics:
+    get:
+      responses:
+        '200':
+          description: Structured operational metrics snapshot

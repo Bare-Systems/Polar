@@ -17,22 +17,28 @@ type Server struct {
 	authz *auth.Auth
 }
 
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
 func NewServer(cfg config.Config, svc *core.Service, authz *auth.Auth) *Server {
 	return &Server{cfg: cfg, svc: svc, authz: authz}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.health)
-	mux.HandleFunc("/readyz", s.ready)
-	mux.Handle("/v1/capabilities", s.authz.Middleware(http.HandlerFunc(s.capabilities)))
-	mux.Handle("/v1/station/health", s.authz.Middleware(http.HandlerFunc(s.stationHealth)))
-	mux.Handle("/v1/readings/latest", s.authz.Middleware(http.HandlerFunc(s.readingsLatest)))
-	mux.Handle("/v1/readings", s.authz.Middleware(http.HandlerFunc(s.queryReadings)))
-	mux.Handle("/v1/forecast/latest", s.authz.Middleware(http.HandlerFunc(s.forecastLatest)))
-	mux.Handle("/v1/forecast", s.authz.Middleware(http.HandlerFunc(s.forecastLatest)))
-	mux.Handle("/v1/diagnostics/data-gaps", s.authz.Middleware(http.HandlerFunc(s.dataGaps)))
-	mux.Handle("/v1/audit/events", s.authz.Middleware(http.HandlerFunc(s.auditEvents)))
+	mux.Handle("/healthz", s.instrument("rest", "/healthz", http.HandlerFunc(s.health)))
+	mux.Handle("/readyz", s.instrument("rest", "/readyz", http.HandlerFunc(s.ready)))
+	mux.Handle("/v1/capabilities", s.instrument("rest", "/v1/capabilities", s.authz.Require(http.HandlerFunc(s.capabilities), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/station/health", s.instrument("rest", "/v1/station/health", s.authz.Require(http.HandlerFunc(s.stationHealth), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/readings/latest", s.instrument("rest", "/v1/readings/latest", s.authz.Require(http.HandlerFunc(s.readingsLatest), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/readings", s.instrument("rest", "/v1/readings", s.authz.Require(http.HandlerFunc(s.queryReadings), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/forecast/latest", s.instrument("rest", "/v1/forecast/latest", s.authz.Require(http.HandlerFunc(s.forecastLatest), auth.ScopeReadForecast)))
+	mux.Handle("/v1/forecast", s.instrument("rest", "/v1/forecast", s.authz.Require(http.HandlerFunc(s.forecastLatest), auth.ScopeReadForecast)))
+	mux.Handle("/v1/diagnostics/data-gaps", s.instrument("rest", "/v1/diagnostics/data-gaps", s.authz.Require(http.HandlerFunc(s.dataGaps), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/audit/events", s.instrument("rest", "/v1/audit/events", s.authz.Require(http.HandlerFunc(s.auditEvents), auth.ScopeReadAudit)))
+	mux.Handle("/v1/metrics", s.instrument("rest", "/v1/metrics", s.authz.Require(http.HandlerFunc(s.metrics), auth.ScopeAdminConfig)))
 	return mux
 }
 
@@ -123,6 +129,19 @@ func (s *Server) auditEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, events)
 }
 
+func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.MetricsSnapshot())
+}
+
+func (s *Server) instrument(surface, name string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		s.svc.RecordRequestMetric(surface, name, recorder.status, time.Since(startedAt))
+	})
+}
+
 func parseRange(r *http.Request) (time.Time, time.Time, error) {
 	now := time.Now().UTC()
 	fromStr := r.URL.Query().Get("from")
@@ -163,4 +182,9 @@ func writeJSON(w http.ResponseWriter, code int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (r *statusRecorder) WriteHeader(statusCode int) {
+	r.status = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
 }

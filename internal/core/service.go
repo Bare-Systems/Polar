@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"time"
 
 	"polar/internal/collector"
 	"polar/internal/config"
+	"polar/internal/obs"
 	"polar/internal/providers"
 	"polar/internal/storage"
 	"polar/pkg/contracts"
@@ -19,12 +21,23 @@ type Service struct {
 	collector collector.Service
 	forecast  providers.ForecastClient
 
-	lastCollectorSuccess time.Time
-	lastForecastSuccess  time.Time
+	mu                      sync.RWMutex
+	lastCollectorSuccess    time.Time
+	lastForecastSuccess     time.Time
+	lastForecastFailure     time.Time
+	lastForecastError       string
+	lastForecastFailureKind string
+	metrics                 *obs.Metrics
 }
 
 func NewService(cfg config.Config, repo *storage.Repository, collectorSvc collector.Service, forecastClient providers.ForecastClient) *Service {
-	return &Service{cfg: cfg, repo: repo, collector: collectorSvc, forecast: forecastClient}
+	return &Service{
+		cfg:       cfg,
+		repo:      repo,
+		collector: collectorSvc,
+		forecast:  forecastClient,
+		metrics:   obs.NewMetrics(),
+	}
 }
 
 func (s *Service) RunSchedulers(ctx context.Context) {
@@ -54,29 +67,46 @@ func (s *Service) RunSchedulers(ctx context.Context) {
 }
 
 func (s *Service) PullSensorReadings(ctx context.Context) error {
+	startedAt := time.Now()
 	readings := s.collector.Collect()
 	if len(readings) == 0 {
+		s.metrics.RecordCollectorRun(0, nil, time.Since(startedAt))
 		return nil
 	}
 	if err := s.repo.InsertReadings(ctx, readings); err != nil {
+		s.metrics.RecordCollectorRun(len(readings), err, time.Since(startedAt))
 		_ = s.repo.InsertAudit(ctx, "collector.error", err.Error())
 		return err
 	}
+	s.mu.Lock()
 	s.lastCollectorSuccess = time.Now().UTC()
+	s.mu.Unlock()
+	s.metrics.RecordCollectorRun(len(readings), nil, time.Since(startedAt))
 	return nil
 }
 
 func (s *Service) PullForecast(ctx context.Context) error {
+	startedAt := time.Now()
 	snap, err := s.forecast.Fetch(ctx, s.cfg.Station.ID, s.cfg.Station.Latitude, s.cfg.Station.Longitude, s.cfg.Provider.OpenMeteoURL)
 	if err != nil {
+		s.recordForecastFailure("provider_error", err)
+		s.metrics.RecordForecastRun(0, err, time.Since(startedAt))
 		_ = s.repo.InsertAudit(ctx, "forecast.error", err.Error())
 		return err
 	}
 	if err := s.repo.InsertForecast(ctx, snap); err != nil {
+		s.recordForecastFailure("store_error", err)
+		s.metrics.RecordForecastRun(len(snap.Points), err, time.Since(startedAt))
 		_ = s.repo.InsertAudit(ctx, "forecast.store.error", err.Error())
 		return err
 	}
+	s.mu.Lock()
 	s.lastForecastSuccess = time.Now().UTC()
+	s.lastForecastFailure = time.Time{}
+	s.lastForecastError = ""
+	s.lastForecastFailureKind = ""
+	s.mu.Unlock()
+	s.metrics.RecordForecastRun(len(snap.Points), nil, time.Since(startedAt))
 	return nil
 }
 
@@ -93,14 +123,26 @@ func (s *Service) Capabilities() contracts.CapabilityDescriptor {
 
 func (s *Service) StationHealth() contracts.StationHealth {
 	now := time.Now().UTC()
+	state := s.runtimeState()
 	overall := "healthy"
 	components := []contracts.ComponentHealth{
-		{Name: "collector", Status: statusFor(s.lastCollectorSuccess, 2*s.cfg.Polling.SensorInterval), LastSuccess: s.lastCollectorSuccess, Message: "sensor sampling"},
+		{Name: "collector", Status: statusFor(state.lastCollectorSuccess, 2*s.cfg.Polling.SensorInterval), LastSuccess: state.lastCollectorSuccess, Message: "sensor sampling"},
 		{Name: "storage", Status: "healthy", LastSuccess: now, Message: "sqlite ready"},
 	}
 	if s.cfg.Features.EnableForecast {
+		forecastStatus := statusFor(state.lastForecastSuccess, 2*s.cfg.Polling.ForecastInterval)
+		if state.lastForecastSuccess.IsZero() && !state.lastForecastFailure.IsZero() {
+			forecastStatus = "degraded"
+		}
+		if state.lastForecastFailure.After(state.lastForecastSuccess) {
+			forecastStatus = "degraded"
+		}
+		message := "open-meteo polling"
+		if state.lastForecastError != "" {
+			message = state.lastForecastError
+		}
 		components = append(components, contracts.ComponentHealth{
-			Name: "forecast", Status: statusFor(s.lastForecastSuccess, 2*s.cfg.Polling.ForecastInterval), LastSuccess: s.lastForecastSuccess, Message: "open-meteo polling",
+			Name: "forecast", Status: forecastStatus, LastSuccess: state.lastForecastSuccess, Message: message,
 		})
 	}
 	for _, c := range components {
@@ -116,6 +158,9 @@ func (s *Service) Readiness() contracts.ReadinessStatus {
 	health := s.StationHealth()
 	ready := true
 	for _, c := range health.Components {
+		if c.Name == "forecast" {
+			continue
+		}
 		if c.Status == "starting" || c.Status == "degraded" {
 			ready = false
 			break
@@ -161,13 +206,38 @@ func (s *Service) QueryReadingsAtResolution(ctx context.Context, metric string, 
 }
 
 func (s *Service) LatestForecast(ctx context.Context) (contracts.ForecastSnapshot, error) {
+	now := time.Now().UTC()
+	state := s.runtimeState()
 	snap, err := s.repo.LatestForecast(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return contracts.ForecastSnapshot{StationID: s.cfg.Station.ID, Provider: "open-meteo", FetchedAt: time.Now().UTC(), Stale: true}, nil
+			return contracts.ForecastSnapshot{
+				StationID:   s.cfg.Station.ID,
+				Provider:    "open-meteo",
+				FetchedAt:   now,
+				Stale:       true,
+				StaleReason: s.staleReasonForMissingForecast(state),
+				LastError:   state.lastForecastError,
+			}, nil
 		}
 		return contracts.ForecastSnapshot{}, err
 	}
+	snap.FreshUntil = snap.FetchedAt.Add(2 * s.cfg.Polling.ForecastInterval)
+	if state.lastForecastFailure.After(snap.FetchedAt) {
+		snap.Stale = true
+		snap.StaleReason = state.lastForecastFailureKind
+		snap.LastError = state.lastForecastError
+		return snap, nil
+	}
+	if now.After(snap.FreshUntil) {
+		snap.Stale = true
+		snap.StaleReason = "expired"
+		snap.LastError = state.lastForecastError
+		return snap, nil
+	}
+	snap.Stale = false
+	snap.StaleReason = ""
+	snap.LastError = ""
 	return snap, nil
 }
 
@@ -189,6 +259,18 @@ func (s *Service) DataGaps(ctx context.Context) ([]contracts.DataGap, error) {
 
 func (s *Service) AuditEvents(ctx context.Context, from, to time.Time, eventType string) ([]map[string]any, error) {
 	return s.repo.QueryAudit(ctx, from, to, eventType)
+}
+
+func (s *Service) MetricsSnapshot() obs.Snapshot {
+	return s.metrics.Snapshot(time.Now().UTC(), s.cfg.Polling.ForecastInterval)
+}
+
+func (s *Service) RecordRequestMetric(surface, name string, status int, duration time.Duration) {
+	s.metrics.RecordRequest(surface, name, status, duration)
+}
+
+func (s *Service) RecordAuthFailure() {
+	s.metrics.RecordAuthFailure()
 }
 
 func aggregateReadings(readings []contracts.Reading, resolution time.Duration) []contracts.Reading {
@@ -225,4 +307,39 @@ func aggregateReadings(readings []contracts.Reading, resolution time.Duration) [
 		out[i].Value /= float64(counts[i])
 	}
 	return out
+}
+
+type serviceState struct {
+	lastCollectorSuccess    time.Time
+	lastForecastSuccess     time.Time
+	lastForecastFailure     time.Time
+	lastForecastError       string
+	lastForecastFailureKind string
+}
+
+func (s *Service) runtimeState() serviceState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return serviceState{
+		lastCollectorSuccess:    s.lastCollectorSuccess,
+		lastForecastSuccess:     s.lastForecastSuccess,
+		lastForecastFailure:     s.lastForecastFailure,
+		lastForecastError:       s.lastForecastError,
+		lastForecastFailureKind: s.lastForecastFailureKind,
+	}
+}
+
+func (s *Service) recordForecastFailure(kind string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastForecastFailure = time.Now().UTC()
+	s.lastForecastError = err.Error()
+	s.lastForecastFailureKind = kind
+}
+
+func (s *Service) staleReasonForMissingForecast(state serviceState) string {
+	if state.lastForecastFailureKind != "" {
+		return state.lastForecastFailureKind
+	}
+	return "unavailable"
 }
