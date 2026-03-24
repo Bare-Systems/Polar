@@ -11,14 +11,15 @@ import (
 )
 
 type Config struct {
-	Profile  string         `json:"profile"`
-	Station  StationConfig  `json:"station"`
-	Server   ServerConfig   `json:"server"`
-	Storage  StorageConfig  `json:"storage"`
-	Auth     AuthConfig     `json:"auth"`
-	Features FeatureFlags   `json:"features"`
-	Polling  PollingConfig  `json:"polling"`
-	Provider ProviderConfig `json:"provider"`
+	Profile   string          `json:"profile"`
+	Station   StationConfig   `json:"station"`
+	Server    ServerConfig    `json:"server"`
+	Storage   StorageConfig   `json:"storage"`
+	Auth      AuthConfig      `json:"auth"`
+	Features  FeatureFlags    `json:"features"`
+	Polling   PollingConfig   `json:"polling"`
+	Provider  ProviderConfig  `json:"provider"`
+	Airthings AirthingsConfig `json:"airthings"`
 }
 
 type StationConfig struct {
@@ -48,8 +49,9 @@ type TokenConfig struct {
 }
 
 type FeatureFlags struct {
-	EnableForecast bool `json:"enable_forecast"`
-	EnableMCP      bool `json:"enable_mcp"`
+	EnableForecast  bool `json:"enable_forecast"`
+	EnableMCP       bool `json:"enable_mcp"`
+	EnableAirthings bool `json:"enable_airthings"`
 }
 
 type PollingConfig struct {
@@ -59,6 +61,12 @@ type PollingConfig struct {
 
 type ProviderConfig struct {
 	OpenMeteoURL string `json:"open_meteo_url"`
+}
+
+type AirthingsConfig struct {
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
+	DeviceIDs    []string `json:"device_ids"` // empty = auto-discover all devices
 }
 
 func defaults() Config {
@@ -152,6 +160,18 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("POLAR_OPEN_METEO_URL"); v != "" {
 		cfg.Provider.OpenMeteoURL = v
+	}
+	if v := os.Getenv("POLAR_ENABLE_AIRTHINGS"); v != "" {
+		cfg.Features.EnableAirthings = strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("POLAR_AIRTHINGS_CLIENT_ID"); v != "" {
+		cfg.Airthings.ClientID = v
+	}
+	if v := os.Getenv("POLAR_AIRTHINGS_CLIENT_SECRET"); v != "" {
+		cfg.Airthings.ClientSecret = v
+	}
+	if v := os.Getenv("POLAR_AIRTHINGS_DEVICE_IDS"); v != "" {
+		cfg.Airthings.DeviceIDs = strings.Split(v, ",")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -111,9 +112,16 @@ func (s *Service) PullForecast(ctx context.Context) error {
 }
 
 func (s *Service) Capabilities() contracts.CapabilityDescriptor {
+	metrics := []string{"temperature", "humidity", "light", "wind_speed", "pressure", "rainfall"}
+	type metricsProvider interface {
+		Metrics() []string
+	}
+	if mp, ok := s.collector.(metricsProvider); ok {
+		metrics = mp.Metrics()
+	}
 	return contracts.CapabilityDescriptor{
 		StationID:           s.cfg.Station.ID,
-		SupportedMetrics:    []string{"temperature", "humidity", "light", "wind_speed", "pressure", "rainfall"},
+		SupportedMetrics:    metrics,
 		SupportsForecast:    s.cfg.Features.EnableForecast,
 		SupportsCalibration: false,
 		MinSamplingSeconds:  1,
@@ -335,6 +343,72 @@ func (s *Service) recordForecastFailure(kind string, err error) {
 	s.lastForecastFailure = time.Now().UTC()
 	s.lastForecastError = err.Error()
 	s.lastForecastFailureKind = kind
+}
+
+// ClimateSnapshot aggregates the latest indoor sensor readings and outdoor forecast
+// into a single, source-agnostic climate picture. As new integrations are added
+// (thermostats, HVAC, home weather stations, NWS), they slot into Indoor.Readings
+// or Outdoor.Current without changing this response shape.
+func (s *Service) ClimateSnapshot(ctx context.Context) (contracts.ClimateSnapshot, error) {
+	now := time.Now().UTC()
+
+	rawReadings, err := s.repo.LatestReadings(ctx)
+	if err != nil {
+		return contracts.ClimateSnapshot{}, err
+	}
+
+	var latestReadingAt *time.Time
+	sourceSet := make(map[string]struct{})
+	indoorReadings := make([]contracts.ClimateMetric, 0, len(rawReadings))
+	for _, rd := range rawReadings {
+		indoorReadings = append(indoorReadings, normalizeReading(rd))
+		sourceSet[rd.Source] = struct{}{}
+		if latestReadingAt == nil || rd.RecordedAt.After(*latestReadingAt) {
+			t := rd.RecordedAt
+			latestReadingAt = &t
+		}
+	}
+
+	indoorSources := make([]string, 0, len(sourceSet))
+	for src := range sourceSet {
+		indoorSources = append(indoorSources, src)
+	}
+	sort.Strings(indoorSources)
+
+	indoorStale := latestReadingAt == nil || now.Sub(*latestReadingAt) > 2*s.cfg.Polling.SensorInterval
+	indoor := contracts.IndoorClimate{
+		Sources:       indoorSources,
+		Readings:      indoorReadings,
+		LastReadingAt: latestReadingAt,
+		Stale:         indoorStale,
+	}
+
+	outdoor := contracts.OutdoorClimate{
+		Sources: []string{},
+		Current: []contracts.ClimateMetric{},
+	}
+	if s.cfg.Features.EnableForecast {
+		forecast, ferr := s.LatestForecast(ctx)
+		if ferr == nil && len(forecast.Points) > 0 {
+			ft := forecast.FetchedAt
+			fu := forecast.FreshUntil
+			outdoor.Sources = []string{"open_meteo"}
+			outdoor.Stale = forecast.Stale
+			outdoor.LastFetchedAt = &ft
+			outdoor.FreshUntil = &fu
+			if pt := closestForecastPoint(forecast.Points, now); pt != nil {
+				outdoor.Current = outdoorMetricsFromPoint(*pt, "open_meteo")
+			}
+			outdoor.Forecast = upcomingForecastPoints(forecast.Points, now, 24*time.Hour)
+		}
+	}
+
+	return contracts.ClimateSnapshot{
+		StationID:   s.cfg.Station.ID,
+		GeneratedAt: now,
+		Indoor:      indoor,
+		Outdoor:     outdoor,
+	}, nil
 }
 
 func (s *Service) staleReasonForMissingForecast(state serviceState) string {

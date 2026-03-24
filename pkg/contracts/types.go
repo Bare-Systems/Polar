@@ -88,3 +88,48 @@ type APIError struct {
 	Retryable bool   `json:"retryable"`
 	TraceID   string `json:"trace_id"`
 }
+
+// ClimateMetric is a single normalized, display-ready environmental metric.
+// It is source-agnostic: the underlying data may come from Airthings, a home
+// weather station, a thermostat, or an NWS feed — the shape is always the same.
+type ClimateMetric struct {
+	Name         string      `json:"name"`          // canonical key, e.g. "temperature"
+	DisplayName  string      `json:"display_name"`  // human label, e.g. "Temperature"
+	Value        float64     `json:"value"`
+	Unit         string      `json:"unit"`          // e.g. "°C", "%RH", "ppm", "Bq/m³"
+	DisplayValue string      `json:"display_value"` // formatted, e.g. "21.4 °C"
+	Domain       string      `json:"domain"`        // "air_quality" | "thermal" | "comfort" | "weather" | "other"
+	Source       string      `json:"source"`        // e.g. "airthings", "open_meteo", "thermostat"
+	Quality      QualityFlag `json:"quality"`
+	RecordedAt   time.Time   `json:"recorded_at"`
+}
+
+// IndoorClimate groups all readings taken inside the home.
+// Sources will grow over time to include thermostats, HVAC sensors, etc.
+type IndoorClimate struct {
+	Sources       []string        `json:"sources"`
+	Readings      []ClimateMetric `json:"readings"`
+	LastReadingAt *time.Time      `json:"last_reading_at,omitempty"`
+	Stale         bool            `json:"stale"`
+}
+
+// OutdoorClimate groups current conditions and forecast for outside the home.
+// Sources will grow to include home weather stations, NWS, and other providers.
+type OutdoorClimate struct {
+	Sources       []string        `json:"sources"`
+	Current       []ClimateMetric `json:"current"`
+	Forecast      []ForecastPoint `json:"forecast,omitempty"`
+	LastFetchedAt *time.Time      `json:"last_fetched_at,omitempty"`
+	FreshUntil    *time.Time      `json:"fresh_until,omitempty"`
+	Stale         bool            `json:"stale"`
+}
+
+// ClimateSnapshot is the top-level aggregated climate response. It presents
+// indoor and outdoor conditions as a unified picture regardless of which
+// underlying integrations (Airthings, HVAC, NWS, etc.) supplied the data.
+type ClimateSnapshot struct {
+	StationID   string         `json:"station_id"`
+	GeneratedAt time.Time      `json:"generated_at"`
+	Indoor      IndoorClimate  `json:"indoor"`
+	Outdoor     OutdoorClimate `json:"outdoor"`
+}

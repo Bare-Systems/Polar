@@ -1,0 +1,129 @@
+[blink]
+version = "1"
+
+# ── Target ────────────────────────────────────────────────────────────────────
+
+[targets.homelab]
+type        = "ssh"
+host        = "blink"
+user        = "admin"
+base        = "/home/admin/baresystems"
+runtime_dir = "/home/admin/baresystems/runtime/polar"
+publish_host = "192.168.86.53"
+
+# ── Service ───────────────────────────────────────────────────────────────────
+
+[services.polar]
+description  = "Polar environmental data service"
+port         = "6702"
+mcp_port     = "6703"
+service_name = "polar"
+
+# ── Source: cross-compile Go binary locally ───────────────────────────────────
+# Default build is linux-amd64 (Beelink Mini PC).
+# Pass --build linux-arm64 to target the Jetson Orin Nano.
+
+[services.polar.source]
+workdir = "."
+default = "linux-amd64"
+
+[services.polar.source.builds.linux-amd64]
+type          = "containerized_local_build"
+image         = "docker:cli"
+mount         = ".:/workspace"
+workdir       = "/workspace"
+command       = "docker run --rm --platform linux/amd64 -v ${BLINK_WORKSPACE_HOST}:/workspace -w /workspace golang:1.24 sh -c 'export PATH=/usr/local/go/bin:$PATH && mkdir -p bin && GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod GOOS=linux GOARCH=amd64 go build -o bin/polar-linux-amd64 ./cmd/polar' && mkdir -p dist && cp bin/polar-linux-amd64 dist/polar && printf 'FROM debian:bookworm-slim\\nRUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*\\nCOPY polar /usr/local/bin/polar\\nRUN chmod +x /usr/local/bin/polar\\nCMD [\"/usr/local/bin/polar\"]\\n' > dist/Dockerfile.polar && docker buildx build --platform linux/amd64 --load -t polar:local -f dist/Dockerfile.polar dist/ && docker tag polar:local registry.home/polar:latest && docker push registry.home/polar:latest"
+docker_socket = true
+
+[services.polar.source.builds.linux-arm64]
+type     = "containerized_local_build"
+image    = "golang:1.24"
+mount    = ".:/workspace"
+workdir  = "/workspace"
+command  = "export PATH=/usr/local/go/bin:$PATH && mkdir -p bin && GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod GOOS=linux GOARCH=arm64 go build -o bin/polar-linux-arm64 ./cmd/polar"
+artifact = "bin/polar-linux-arm64"
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+# provision + docker replace the old remote_script + start pattern.
+# No external shell script required.
+
+[services.polar.deploy]
+target            = "homelab"
+pipeline          = ["provision", "stop", "start", "health_check", "verify"]
+rollback_pipeline = ["stop", "start", "health_check"]
+
+# ── Provision: runtime dirs + secrets seed ────────────────────────────────────
+# Dirs are created on first run. The env file is seeded with placeholders
+# once — fill in real secrets on the host, then redeploy.
+
+[services.polar.provision]
+dirs = [
+  "{{runtime_dir}}/staging",
+  "{{runtime_dir}}/bin",
+  "{{runtime_dir}}/data",
+  "{{runtime_dir}}/logs"
+]
+
+[services.polar.provision.env_file]
+path = "{{runtime_dir}}/polar.env"
+
+[services.polar.provision.env_file.seed]
+POLAR_SERVICE_TOKEN           = "replace-me"
+POLAR_STATION_ID              = "homelab"
+POLAR_AIRTHINGS_CLIENT_ID     = ""
+POLAR_AIRTHINGS_CLIENT_SECRET = ""
+
+# ── Stop: remove the existing container ───────────────────────────────────────
+
+[services.polar.stop]
+command = "docker stop polar 2>/dev/null || true && docker rm polar 2>/dev/null || true"
+
+# ── Start: pull image from registry and run container ────────────────────────
+
+[services.polar.start]
+command = "docker pull registry.home:5000/polar:latest && docker tag registry.home:5000/polar:latest polar:local && docker run -d --name polar --restart unless-stopped -p {{publish_host}}:{{port}}:{{port}} -p {{publish_host}}:{{mcp_port}}:{{mcp_port}} -v {{runtime_dir}}/data:/data -e POLAR_LISTEN_ADDR=:{{port}} -e POLAR_MCP_ADDR=:{{mcp_port}} -e POLAR_SQLITE_PATH=/data/polar.db -e POLAR_ENABLE_MCP=true --env-file {{runtime_dir}}/polar.env polar:local"
+
+# ── Health check ──────────────────────────────────────────────────────────────
+
+[services.polar.health_check]
+url      = "http://{{publish_host}}:{{port}}/healthz"
+timeout  = 30
+interval = 2
+
+# ── Inline verification tests ──────────────────────────────────────────────────
+# Runs after every deploy — no Ruby suite file needed for these checks.
+
+[services.polar.verify]
+tags = ["smoke", "health"]
+
+[services.polar.verify.tests.rest-health]
+type          = "http"
+url           = "http://{{publish_host}}:{{port}}/healthz"
+expect_status = 200
+expect_body   = "ok"
+tags          = ["smoke"]
+
+[services.polar.verify.tests.mcp-health]
+type          = "http"
+url           = "http://{{publish_host}}:{{mcp_port}}/healthz"
+expect_status = 200
+tags          = ["smoke"]
+
+[services.polar.verify.tests.container-running]
+type          = "shell"
+command       = "docker inspect --format '{{.State.Status}}' polar 2>/dev/null"
+expect_output = "running"
+tags          = ["health"]
+
+[services.polar.verify.tests.auth-required]
+type          = "http"
+url           = "http://{{publish_host}}:{{port}}/v1/readings/latest"
+expect_status = 401
+tags          = ["smoke"]
+
+[services.polar.verify.tests.rest-health-published]
+type          = "http"
+url           = "http://{{publish_host}}:{{port}}/healthz"
+expect_status = 200
+expect_body   = "ok"
+tags          = ["health"]

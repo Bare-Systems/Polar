@@ -1,0 +1,35 @@
+{
+  "profile": "airthings",
+  "station": {
+    "id": "polar-home-01",
+    "latitude": 40.7128,
+    "longitude": -74.0060
+  },
+  "server": {
+    "listen_addr": ":8093",
+    "mcp_listen_addr": ":8094"
+  },
+  "storage": {
+    "sqlite_path": "/var/lib/polar/polar.db"
+  },
+  "auth": {
+    "service_token": "replace-me"
+  },
+  "features": {
+    "enable_forecast": true,
+    "enable_mcp": true,
+    "enable_airthings": true
+  },
+  "polling": {
+    "sensor_interval": 300000000000,
+    "forecast_interval": 1800000000000
+  },
+  "provider": {
+    "open_meteo_url": "https://api.open-meteo.com/v1/forecast"
+  },
+  "airthings": {
+    "client_id": "replace-me",
+    "client_secret": "replace-me",
+    "device_ids": []
+  }
+}

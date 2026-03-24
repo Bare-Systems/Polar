@@ -39,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/v1/diagnostics/data-gaps", s.instrument("rest", "/v1/diagnostics/data-gaps", s.authz.Require(http.HandlerFunc(s.dataGaps), auth.ScopeReadTelemetry)))
 	mux.Handle("/v1/audit/events", s.instrument("rest", "/v1/audit/events", s.authz.Require(http.HandlerFunc(s.auditEvents), auth.ScopeReadAudit)))
 	mux.Handle("/v1/metrics", s.instrument("rest", "/v1/metrics", s.authz.Require(http.HandlerFunc(s.metrics), auth.ScopeAdminConfig)))
+	mux.Handle("/v1/climate/snapshot", s.instrument("rest", "/v1/climate/snapshot", s.authz.Require(http.HandlerFunc(s.climateSnapshot), auth.ScopeReadTelemetry)))
 	return mux
 }
 
@@ -127,6 +128,15 @@ func (s *Server) auditEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) climateSnapshot(w http.ResponseWriter, r *http.Request) {
+	snap, err := s.svc.ClimateSnapshot(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {

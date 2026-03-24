@@ -40,7 +40,14 @@ func main() {
 		log.Fatalf("migrate failed: %v", err)
 	}
 
-	collectorSvc := collector.NewSimulatorService(cfg)
+	var collectorSvc collector.Service
+	if cfg.Features.EnableAirthings {
+		log.Printf("collector: airthings (client_id=%s)", cfg.Airthings.ClientID)
+		collectorSvc = collector.NewAirthingsService(cfg, &http.Client{Timeout: 20 * time.Second})
+	} else {
+		log.Printf("collector: simulator")
+		collectorSvc = collector.NewSimulatorService(cfg)
+	}
 	forecastClient := providers.NewOpenMeteoClient(http.DefaultClient)
 	svc := core.NewService(cfg, repo, collectorSvc, forecastClient)
 
