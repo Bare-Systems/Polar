@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -20,24 +21,26 @@ type Service struct {
 	cfg       config.Config
 	repo      *storage.Repository
 	collector collector.Service
-	forecast  providers.ForecastClient
+	weather   providers.WeatherClient
+	fallback  providers.ForecastClient
+	air       providers.AirQualityClient
 
-	mu                      sync.RWMutex
-	lastCollectorSuccess    time.Time
-	lastForecastSuccess     time.Time
-	lastForecastFailure     time.Time
-	lastForecastError       string
-	lastForecastFailureKind string
-	metrics                 *obs.Metrics
+	mu                   sync.RWMutex
+	lastCollectorSuccess time.Time
+	metrics              *obs.Metrics
+	live                 *liveHub
 }
 
-func NewService(cfg config.Config, repo *storage.Repository, collectorSvc collector.Service, forecastClient providers.ForecastClient) *Service {
+func NewService(cfg config.Config, repo *storage.Repository, collectorSvc collector.Service, weatherClient providers.WeatherClient, fallbackClient providers.ForecastClient, airClient providers.AirQualityClient) *Service {
 	return &Service{
 		cfg:       cfg,
 		repo:      repo,
 		collector: collectorSvc,
-		forecast:  forecastClient,
+		weather:   weatherClient,
+		fallback:  fallbackClient,
+		air:       airClient,
 		metrics:   obs.NewMetrics(),
+		live:      newLiveHub(),
 	}
 }
 
@@ -45,13 +48,19 @@ func (s *Service) RunSchedulers(ctx context.Context) {
 	sensorTicker := time.NewTicker(s.cfg.Polling.SensorInterval)
 	defer sensorTicker.Stop()
 
-	forecastTicker := time.NewTicker(s.cfg.Polling.ForecastInterval)
-	defer forecastTicker.Stop()
+	weatherTicker := time.NewTicker(s.cfg.Polling.WeatherInterval)
+	defer weatherTicker.Stop()
+
+	airTicker := time.NewTicker(s.cfg.Polling.AirQualityInterval)
+	defer airTicker.Stop()
+
+	alertTicker := time.NewTicker(s.cfg.Polling.AlertInterval)
+	defer alertTicker.Stop()
 
 	_ = s.PullSensorReadings(ctx)
-	if s.cfg.Features.EnableForecast {
-		_ = s.PullForecast(ctx)
-	}
+	_ = s.PullWeather(ctx)
+	_ = s.PullAirQuality(ctx)
+	_ = s.PullAlerts(ctx)
 
 	for {
 		select {
@@ -59,10 +68,12 @@ func (s *Service) RunSchedulers(ctx context.Context) {
 			return
 		case <-sensorTicker.C:
 			_ = s.PullSensorReadings(context.Background())
-		case <-forecastTicker.C:
-			if s.cfg.Features.EnableForecast {
-				_ = s.PullForecast(context.Background())
-			}
+		case <-weatherTicker.C:
+			_ = s.PullWeather(context.Background())
+		case <-airTicker.C:
+			_ = s.PullAirQuality(context.Background())
+		case <-alertTicker.C:
+			_ = s.PullAlerts(context.Background())
 		}
 	}
 }
@@ -83,31 +94,157 @@ func (s *Service) PullSensorReadings(ctx context.Context) error {
 	s.lastCollectorSuccess = time.Now().UTC()
 	s.mu.Unlock()
 	s.metrics.RecordCollectorRun(len(readings), nil, time.Since(startedAt))
+	for _, target := range s.monitorTargets() {
+		if target.Indoor {
+			s.publishSnapshot(ctx, target.ID)
+		}
+	}
 	return nil
 }
 
-func (s *Service) PullForecast(ctx context.Context) error {
+func (s *Service) PullWeather(ctx context.Context) error {
 	startedAt := time.Now()
-	snap, err := s.forecast.Fetch(ctx, s.cfg.Station.ID, s.cfg.Station.Latitude, s.cfg.Station.Longitude, s.cfg.Provider.OpenMeteoURL)
+	var firstErr error
+	successful := 0
+	for _, target := range s.monitorTargets() {
+		if !target.Weather {
+			continue
+		}
+		if err := s.pullWeatherForTarget(ctx, target); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			successful++
+		}
+	}
+	s.metrics.RecordForecastRun(successful, firstErr, time.Since(startedAt))
+	return firstErr
+}
+
+func (s *Service) pullWeatherForTarget(ctx context.Context, target contracts.MonitorTarget) error {
+	if s.weather == nil {
+		return nil
+	}
+
+	bundle, err := s.weather.Fetch(ctx, target)
 	if err != nil {
-		s.recordForecastFailure("provider_error", err)
-		s.metrics.RecordForecastRun(0, err, time.Since(startedAt))
-		_ = s.repo.InsertAudit(ctx, "forecast.error", err.Error())
+		_ = s.recordProviderFailure(ctx, target.ID, "noaa", "weather", err, 2*s.cfg.Polling.WeatherInterval)
+		_ = s.recordProviderFailure(ctx, target.ID, "noaa", "forecast", err, 2*s.cfg.Polling.ForecastInterval)
+		_ = s.recordProviderFailure(ctx, target.ID, "noaa", "alerts", err, 2*s.cfg.Polling.AlertInterval)
+		forecastErr := err
+		if s.fallback != nil && s.cfg.Provider.OpenMeteoURL != "" {
+			forecast, ferr := s.fallback.Fetch(ctx, target, s.cfg.Provider.OpenMeteoURL)
+			if ferr == nil {
+				forecast.TargetID = target.ID
+				forecast.StationID = target.ID
+				forecast.Stale = false
+				forecast.StaleReason = ""
+				forecast.LastError = ""
+				if err := s.repo.InsertForecast(ctx, forecast); err == nil {
+					_ = s.recordProviderSuccess(ctx, target.ID, "open-meteo", "forecast", 2*s.cfg.Polling.WeatherInterval)
+					_ = s.repo.InsertAudit(ctx, "weather.fallback", fmt.Sprintf("target=%s provider=open-meteo reason=%v", target.ID, forecastErr))
+					s.publishSnapshot(ctx, target.ID)
+					return nil
+				}
+			}
+		}
+		_ = s.repo.InsertAudit(ctx, "weather.error", fmt.Sprintf("target=%s err=%v", target.ID, err))
 		return err
 	}
-	if err := s.repo.InsertForecast(ctx, snap); err != nil {
-		s.recordForecastFailure("store_error", err)
-		s.metrics.RecordForecastRun(len(snap.Points), err, time.Since(startedAt))
-		_ = s.repo.InsertAudit(ctx, "forecast.store.error", err.Error())
+
+	if err := s.repo.StoreWeatherCurrent(ctx, bundle.Current); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.lastForecastSuccess = time.Now().UTC()
-	s.lastForecastFailure = time.Time{}
-	s.lastForecastError = ""
-	s.lastForecastFailureKind = ""
-	s.mu.Unlock()
-	s.metrics.RecordForecastRun(len(snap.Points), nil, time.Since(startedAt))
+	if err := s.repo.InsertForecast(ctx, bundle.Forecast); err != nil {
+		return err
+	}
+	if err := s.repo.ReplaceAlerts(ctx, target.ID, "noaa", time.Now().UTC(), bundle.Alerts); err != nil {
+		return err
+	}
+	_ = s.recordProviderSuccess(ctx, target.ID, "noaa", "weather", 2*s.cfg.Polling.WeatherInterval)
+	_ = s.recordProviderSuccess(ctx, target.ID, "noaa", "forecast", 2*s.cfg.Polling.WeatherInterval)
+	_ = s.recordProviderSuccess(ctx, target.ID, "noaa", "alerts", 2*s.cfg.Polling.AlertInterval)
+	s.publishSnapshot(ctx, target.ID)
+	return nil
+}
+
+func (s *Service) PullAirQuality(ctx context.Context) error {
+	if s.air == nil {
+		return nil
+	}
+	var firstErr error
+	for _, target := range s.monitorTargets() {
+		if !target.AirQuality {
+			continue
+		}
+		if err := s.pullAirQualityForTarget(ctx, target); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (s *Service) PullForecast(ctx context.Context) error {
+	if s.fallback == nil {
+		return nil
+	}
+	startedAt := time.Now()
+	var firstErr error
+	successful := 0
+	for _, target := range s.monitorTargets() {
+		if !target.Weather {
+			continue
+		}
+		forecast, err := s.fallback.Fetch(ctx, target, s.cfg.Provider.OpenMeteoURL)
+		if err != nil {
+			_ = s.recordProviderFailure(ctx, target.ID, "open-meteo", "forecast", err, 2*s.cfg.Polling.ForecastInterval)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		forecast.TargetID = target.ID
+		forecast.StationID = target.ID
+		if err := s.repo.InsertForecast(ctx, forecast); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		_ = s.recordProviderSuccess(ctx, target.ID, forecast.Provider, "forecast", 2*s.cfg.Polling.ForecastInterval)
+		successful++
+	}
+	s.metrics.RecordForecastRun(successful, firstErr, time.Since(startedAt))
+	return firstErr
+}
+
+func (s *Service) pullAirQualityForTarget(ctx context.Context, target contracts.MonitorTarget) error {
+	current, err := s.air.FetchCurrent(ctx, target)
+	if err != nil {
+		_ = s.recordProviderFailure(ctx, target.ID, "airnow", "air_quality_current", err, 2*s.cfg.Polling.AirQualityInterval)
+		_ = s.repo.InsertAudit(ctx, "air_quality.current.error", fmt.Sprintf("target=%s err=%v", target.ID, err))
+		return err
+	}
+	if err := s.repo.StoreAirQualityCurrent(ctx, current); err != nil {
+		return err
+	}
+	forecast, err := s.air.FetchForecast(ctx, target)
+	if err != nil {
+		_ = s.recordProviderFailure(ctx, target.ID, "airnow", "air_quality_forecast", err, 2*s.cfg.Polling.AirQualityInterval)
+		_ = s.repo.InsertAudit(ctx, "air_quality.forecast.error", fmt.Sprintf("target=%s err=%v", target.ID, err))
+	} else {
+		if err := s.repo.StoreAirQualityForecast(ctx, forecast); err != nil {
+			return err
+		}
+		_ = s.recordProviderSuccess(ctx, target.ID, "airnow", "air_quality_forecast", 2*s.cfg.Polling.AirQualityInterval)
+	}
+	_ = s.recordProviderSuccess(ctx, target.ID, "airnow", "air_quality_current", 2*s.cfg.Polling.AirQualityInterval)
+	s.publishSnapshot(ctx, target.ID)
+	return nil
+}
+
+func (s *Service) PullAlerts(ctx context.Context) error {
 	return nil
 }
 
@@ -119,42 +256,62 @@ func (s *Service) Capabilities() contracts.CapabilityDescriptor {
 	if mp, ok := s.collector.(metricsProvider); ok {
 		metrics = mp.Metrics()
 	}
+	targets := s.monitorTargets()
+	support := make([]contracts.ProviderTarget, 0, len(targets))
+	for _, target := range targets {
+		support = append(support, contracts.ProviderTarget{
+			TargetID:   target.ID,
+			Weather:    target.Weather,
+			AirQuality: target.AirQuality,
+			Indoor:     target.Indoor,
+		})
+	}
 	return contracts.CapabilityDescriptor{
 		StationID:           s.cfg.Station.ID,
 		SupportedMetrics:    metrics,
-		SupportsForecast:    s.cfg.Features.EnableForecast,
+		SupportsForecast:    true,
 		SupportsCalibration: false,
 		MinSamplingSeconds:  1,
 		MaxSamplingSeconds:  3600,
+		Targets:             targets,
+		ProviderSupport:     support,
 	}
 }
 
 func (s *Service) StationHealth() contracts.StationHealth {
 	now := time.Now().UTC()
-	state := s.runtimeState()
-	overall := "healthy"
+	s.mu.RLock()
+	lastCollector := s.lastCollectorSuccess
+	s.mu.RUnlock()
+
 	components := []contracts.ComponentHealth{
-		{Name: "collector", Status: statusFor(state.lastCollectorSuccess, 2*s.cfg.Polling.SensorInterval), LastSuccess: state.lastCollectorSuccess, Message: "sensor sampling"},
-		{Name: "storage", Status: "healthy", LastSuccess: now, Message: "sqlite ready"},
+		{Name: "collector", Status: statusFor(lastCollector, 2*s.cfg.Polling.SensorInterval), LastSuccess: lastCollector, Message: "sensor sampling"},
+		{Name: "storage", Status: "healthy", LastSuccess: now, Message: storageMessage(s.cfg.Storage)},
 	}
-	if s.cfg.Features.EnableForecast {
-		forecastStatus := statusFor(state.lastForecastSuccess, 2*s.cfg.Polling.ForecastInterval)
-		if state.lastForecastSuccess.IsZero() && !state.lastForecastFailure.IsZero() {
-			forecastStatus = "degraded"
+
+	defaultTargetID := s.cfg.DefaultTargetID()
+	if statuses, err := s.repo.ProviderStatuses(context.Background(), defaultTargetID); err == nil {
+		for _, status := range statuses {
+			lastSuccess := time.Time{}
+			if status.LastSuccessAt != nil {
+				lastSuccess = *status.LastSuccessAt
+			}
+			message := status.Provider
+			if status.LastError != "" {
+				message = status.LastError
+			}
+			components = append(components, contracts.ComponentHealth{
+				Name:        status.Provider + ":" + status.Component,
+				Status:      status.Status,
+				LastSuccess: lastSuccess,
+				Message:     message,
+			})
 		}
-		if state.lastForecastFailure.After(state.lastForecastSuccess) {
-			forecastStatus = "degraded"
-		}
-		message := "open-meteo polling"
-		if state.lastForecastError != "" {
-			message = state.lastForecastError
-		}
-		components = append(components, contracts.ComponentHealth{
-			Name: "forecast", Status: forecastStatus, LastSuccess: state.lastForecastSuccess, Message: message,
-		})
 	}
-	for _, c := range components {
-		if c.Status != "healthy" {
+
+	overall := "healthy"
+	for _, component := range components {
+		if component.Status != "healthy" {
 			overall = "degraded"
 			break
 		}
@@ -166,10 +323,7 @@ func (s *Service) Readiness() contracts.ReadinessStatus {
 	health := s.StationHealth()
 	ready := true
 	for _, c := range health.Components {
-		if c.Name == "forecast" {
-			continue
-		}
-		if c.Status == "starting" || c.Status == "degraded" {
+		if c.Name == "collector" && c.Status != "healthy" {
 			ready = false
 			break
 		}
@@ -185,16 +339,6 @@ func (s *Service) Readiness() contracts.ReadinessStatus {
 		Components:  health.Components,
 		GeneratedAt: health.GeneratedAt,
 	}
-}
-
-func statusFor(last time.Time, maxLag time.Duration) string {
-	if last.IsZero() {
-		return "starting"
-	}
-	if time.Since(last) > maxLag {
-		return "degraded"
-	}
-	return "healthy"
 }
 
 func (s *Service) LatestReadings(ctx context.Context) ([]contracts.Reading, error) {
@@ -214,39 +358,127 @@ func (s *Service) QueryReadingsAtResolution(ctx context.Context, metric string, 
 }
 
 func (s *Service) LatestForecast(ctx context.Context) (contracts.ForecastSnapshot, error) {
-	now := time.Now().UTC()
-	state := s.runtimeState()
-	snap, err := s.repo.LatestForecast(ctx)
+	return s.ForecastForTarget(ctx, s.cfg.DefaultTargetID())
+}
+
+func (s *Service) ForecastForTarget(ctx context.Context, targetID string) (contracts.ForecastSnapshot, error) {
+	target, err := s.resolveTarget(targetID)
+	if err != nil {
+		return contracts.ForecastSnapshot{}, err
+	}
+	snap, err := s.repo.LatestForecastForTarget(ctx, target.ID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return contracts.ForecastSnapshot{
+				TargetID:    target.ID,
 				StationID:   s.cfg.Station.ID,
-				Provider:    "open-meteo",
-				FetchedAt:   now,
+				Provider:    "noaa",
+				Latitude:    target.Latitude,
+				Longitude:   target.Longitude,
+				FetchedAt:   time.Now().UTC(),
 				Stale:       true,
-				StaleReason: s.staleReasonForMissingForecast(state),
-				LastError:   state.lastForecastError,
+				StaleReason: "unavailable",
 			}, nil
 		}
 		return contracts.ForecastSnapshot{}, err
 	}
 	snap.FreshUntil = snap.FetchedAt.Add(2 * s.cfg.Polling.ForecastInterval)
-	if state.lastForecastFailure.After(snap.FetchedAt) {
-		snap.Stale = true
-		snap.StaleReason = state.lastForecastFailureKind
-		snap.LastError = state.lastForecastError
-		return snap, nil
-	}
-	if now.After(snap.FreshUntil) {
+	if time.Now().UTC().After(snap.FreshUntil) {
 		snap.Stale = true
 		snap.StaleReason = "expired"
-		snap.LastError = state.lastForecastError
-		return snap, nil
 	}
-	snap.Stale = false
-	snap.StaleReason = ""
-	snap.LastError = ""
+	statuses, _ := s.repo.ProviderStatuses(ctx, target.ID)
+	applyForecastStatus(&snap, statuses)
 	return snap, nil
+}
+
+func (s *Service) WeatherCurrent(ctx context.Context, targetID string) (contracts.WeatherCurrent, error) {
+	target, err := s.resolveTarget(targetID)
+	if err != nil {
+		return contracts.WeatherCurrent{}, err
+	}
+	current, err := s.repo.LatestWeatherCurrent(ctx, target.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return contracts.WeatherCurrent{
+				TargetID:    target.ID,
+				Source:      "noaa",
+				FetchedAt:   time.Now().UTC(),
+				RecordedAt:  time.Now().UTC(),
+				Quality:     contracts.QualityUnavailable,
+				Stale:       true,
+				StaleReason: "unavailable",
+			}, nil
+		}
+		return contracts.WeatherCurrent{}, err
+	}
+	if status := providerStatusByComponent(mustStatuses(s.repo.ProviderStatuses(ctx, target.ID)), "weather"); status != nil {
+		current.Stale = status.Stale
+		current.StaleReason = staleReasonForStatus(*status)
+		current.LastError = status.LastError
+	}
+	return current, nil
+}
+
+func (s *Service) AirQualityCurrent(ctx context.Context, targetID string) (contracts.AirQualityCurrent, error) {
+	target, err := s.resolveTarget(targetID)
+	if err != nil {
+		return contracts.AirQualityCurrent{}, err
+	}
+	current, err := s.repo.LatestAirQualityCurrent(ctx, target.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return contracts.AirQualityCurrent{
+				TargetID:    target.ID,
+				Source:      "airnow",
+				FetchedAt:   time.Now().UTC(),
+				RecordedAt:  time.Now().UTC(),
+				Stale:       true,
+				StaleReason: "unavailable",
+			}, nil
+		}
+		return contracts.AirQualityCurrent{}, err
+	}
+	if status := providerStatusByComponent(mustStatuses(s.repo.ProviderStatuses(ctx, target.ID)), "air_quality_current"); status != nil {
+		current.Stale = status.Stale
+		current.StaleReason = staleReasonForStatus(*status)
+		current.LastError = status.LastError
+	}
+	return current, nil
+}
+
+func (s *Service) AirQualityForecast(ctx context.Context, targetID string) (contracts.AirQualityForecast, error) {
+	target, err := s.resolveTarget(targetID)
+	if err != nil {
+		return contracts.AirQualityForecast{}, err
+	}
+	forecast, err := s.repo.LatestAirQualityForecast(ctx, target.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return contracts.AirQualityForecast{
+				TargetID:    target.ID,
+				Source:      "airnow",
+				FetchedAt:   time.Now().UTC(),
+				Stale:       true,
+				StaleReason: "unavailable",
+			}, nil
+		}
+		return contracts.AirQualityForecast{}, err
+	}
+	if status := providerStatusByComponent(mustStatuses(s.repo.ProviderStatuses(ctx, target.ID)), "air_quality_forecast"); status != nil {
+		forecast.Stale = status.Stale
+		forecast.StaleReason = staleReasonForStatus(*status)
+		forecast.LastError = status.LastError
+	}
+	return forecast, nil
+}
+
+func (s *Service) WeatherAlerts(ctx context.Context, targetID string) ([]contracts.WeatherAlert, error) {
+	target, err := s.resolveTarget(targetID)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.ActiveAlerts(ctx, target.ID)
 }
 
 func (s *Service) DataGaps(ctx context.Context) ([]contracts.DataGap, error) {
@@ -270,7 +502,7 @@ func (s *Service) AuditEvents(ctx context.Context, from, to time.Time, eventType
 }
 
 func (s *Service) MetricsSnapshot() obs.Snapshot {
-	return s.metrics.Snapshot(time.Now().UTC(), s.cfg.Polling.ForecastInterval)
+	return s.metrics.Snapshot(time.Now().UTC(), s.cfg.Polling.WeatherInterval)
 }
 
 func (s *Service) RecordRequestMetric(surface, name string, status int, duration time.Duration) {
@@ -279,6 +511,164 @@ func (s *Service) RecordRequestMetric(surface, name string, status int, duration
 
 func (s *Service) RecordAuthFailure() {
 	s.metrics.RecordAuthFailure()
+}
+
+func (s *Service) Targets() []contracts.MonitorTarget {
+	return s.monitorTargets()
+}
+
+func (s *Service) ClimateSnapshot(ctx context.Context) (contracts.ClimateSnapshot, error) {
+	return s.ClimateSnapshotForTarget(ctx, s.cfg.DefaultTargetID())
+}
+
+func (s *Service) ClimateSnapshotForTarget(ctx context.Context, targetID string) (contracts.ClimateSnapshot, error) {
+	target, err := s.resolveTarget(targetID)
+	if err != nil {
+		return contracts.ClimateSnapshot{}, err
+	}
+
+	now := time.Now().UTC()
+	rawReadings, err := s.repo.LatestReadings(ctx)
+	if err != nil {
+		return contracts.ClimateSnapshot{}, err
+	}
+
+	var latestReadingAt *time.Time
+	indoorReadings := make([]contracts.ClimateMetric, 0, len(rawReadings))
+	indoorSources := make(map[string]struct{})
+	if target.Indoor {
+		for _, rd := range rawReadings {
+			indoorReadings = append(indoorReadings, normalizeReading(rd))
+			indoorSources[rd.Source] = struct{}{}
+			if latestReadingAt == nil || rd.RecordedAt.After(*latestReadingAt) {
+				t := rd.RecordedAt
+				latestReadingAt = &t
+			}
+		}
+	}
+
+	weatherCurrent, _ := s.WeatherCurrent(ctx, target.ID)
+	forecast, _ := s.ForecastForTarget(ctx, target.ID)
+	airCurrent, _ := s.AirQualityCurrent(ctx, target.ID)
+	airForecast, _ := s.AirQualityForecast(ctx, target.ID)
+	alerts, _ := s.WeatherAlerts(ctx, target.ID)
+	statuses, _ := s.repo.ProviderStatuses(ctx, target.ID)
+
+	indoorSourceList := mapKeys(indoorSources)
+	outdoorSources := aggregateSources(weatherCurrent.Source, forecast.Provider, airCurrent.Source, airForecast.Source)
+	var lastFetched *time.Time
+	var freshUntil *time.Time
+	if !forecast.FetchedAt.IsZero() {
+		t := forecast.FetchedAt
+		lastFetched = &t
+	}
+	if !forecast.FreshUntil.IsZero() {
+		t := forecast.FreshUntil
+		freshUntil = &t
+	}
+
+	outdoor := contracts.OutdoorClimate{
+		Target:          target,
+		Sources:         outdoorSources,
+		CurrentWeather:  &weatherCurrent,
+		Forecast:        &forecast,
+		AirQuality:      &airCurrent,
+		AirQualityTrend: &airForecast,
+		Alerts:          alerts,
+		Statuses:        statuses,
+		Current:         currentWeatherMetrics(weatherCurrent),
+		LastFetchedAt:   lastFetched,
+		FreshUntil:      freshUntil,
+		Stale:           weatherCurrent.Stale || forecast.Stale || airCurrent.Stale || airForecast.Stale,
+	}
+
+	return contracts.ClimateSnapshot{
+		StationID:   s.cfg.Station.ID,
+		TargetID:    target.ID,
+		GeneratedAt: now,
+		Indoor: contracts.IndoorClimate{
+			Sources:       indoorSourceList,
+			Readings:      indoorReadings,
+			LastReadingAt: latestReadingAt,
+			Stale:         target.Indoor && (latestReadingAt == nil || now.Sub(*latestReadingAt) > 2*s.cfg.Polling.SensorInterval),
+		},
+		Outdoor: outdoor,
+	}, nil
+}
+
+func (s *Service) Subscribe(targetID string) (chan contracts.LiveUpdate, error) {
+	target, err := s.resolveTarget(targetID)
+	if err != nil {
+		return nil, err
+	}
+	return s.live.Subscribe(target.ID), nil
+}
+
+func (s *Service) Unsubscribe(targetID string, ch chan contracts.LiveUpdate) {
+	s.live.Unsubscribe(targetID, ch)
+}
+
+func (s *Service) publishSnapshot(ctx context.Context, targetID string) {
+	snap, err := s.ClimateSnapshotForTarget(ctx, targetID)
+	if err != nil {
+		return
+	}
+	s.live.Publish(contracts.LiveUpdate{
+		Type:      "snapshot",
+		TargetID:  targetID,
+		Timestamp: time.Now().UTC(),
+		Snapshot:  snap,
+	})
+}
+
+func (s *Service) recordProviderSuccess(ctx context.Context, targetID, provider, component string, freshness time.Duration) error {
+	now := time.Now().UTC()
+	freshUntil := now.Add(freshness)
+	return s.repo.UpsertProviderStatus(ctx, contracts.ProviderStatus{
+		TargetID:      targetID,
+		Provider:      provider,
+		Component:     component,
+		Status:        "healthy",
+		LastSuccessAt: &now,
+		FreshUntil:    &freshUntil,
+		Stale:         false,
+	})
+}
+
+func (s *Service) recordProviderFailure(ctx context.Context, targetID, provider, component string, err error, freshness time.Duration) error {
+	statuses, _ := s.repo.ProviderStatuses(ctx, targetID)
+	var lastSuccess *time.Time
+	if existing := providerStatus(statuses, provider, component); existing != nil {
+		lastSuccess = existing.LastSuccessAt
+	}
+	now := time.Now().UTC()
+	freshUntil := now.Add(freshness)
+	return s.repo.UpsertProviderStatus(ctx, contracts.ProviderStatus{
+		TargetID:      targetID,
+		Provider:      provider,
+		Component:     component,
+		Status:        "degraded",
+		LastSuccessAt: lastSuccess,
+		LastFailureAt: &now,
+		LastError:     err.Error(),
+		FreshUntil:    &freshUntil,
+		Stale:         true,
+	})
+}
+
+func (s *Service) monitorTargets() []contracts.MonitorTarget {
+	return s.cfg.MonitorTargets()
+}
+
+func (s *Service) resolveTarget(id string) (contracts.MonitorTarget, error) {
+	if id == "" {
+		id = s.cfg.DefaultTargetID()
+	}
+	target, ok := s.cfg.TargetByID(id)
+	if !ok {
+		return contracts.MonitorTarget{}, fmt.Errorf("unknown target: %s", id)
+	}
+	return target, nil
 }
 
 func aggregateReadings(readings []contracts.Reading, resolution time.Duration) []contracts.Reading {
@@ -317,103 +707,68 @@ func aggregateReadings(readings []contracts.Reading, resolution time.Duration) [
 	return out
 }
 
-type serviceState struct {
-	lastCollectorSuccess    time.Time
-	lastForecastSuccess     time.Time
-	lastForecastFailure     time.Time
-	lastForecastError       string
-	lastForecastFailureKind string
+func mapKeys(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
-func (s *Service) runtimeState() serviceState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return serviceState{
-		lastCollectorSuccess:    s.lastCollectorSuccess,
-		lastForecastSuccess:     s.lastForecastSuccess,
-		lastForecastFailure:     s.lastForecastFailure,
-		lastForecastError:       s.lastForecastError,
-		lastForecastFailureKind: s.lastForecastFailureKind,
+func storageMessage(cfg config.StorageConfig) string {
+	if cfg.Driver == storage.DialectPostgres || cfg.DatabaseURL != "" {
+		return "postgres ready"
+	}
+	return "sqlite ready"
+}
+
+func applyForecastStatus(snap *contracts.ForecastSnapshot, statuses []contracts.ProviderStatus) {
+	status := providerStatusByComponent(statuses, "forecast")
+	if status == nil {
+		return
+	}
+	snap.Stale = status.Stale
+	snap.LastError = status.LastError
+	snap.StaleReason = staleReasonForStatus(*status)
+	if status.FreshUntil != nil {
+		snap.FreshUntil = *status.FreshUntil
 	}
 }
 
-func (s *Service) recordForecastFailure(kind string, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.lastForecastFailure = time.Now().UTC()
-	s.lastForecastError = err.Error()
-	s.lastForecastFailureKind = kind
+func providerStatus(statuses []contracts.ProviderStatus, provider, component string) *contracts.ProviderStatus {
+	for _, status := range statuses {
+		if status.Provider == provider && status.Component == component {
+			copyStatus := status
+			return &copyStatus
+		}
+	}
+	return nil
 }
 
-// ClimateSnapshot aggregates the latest indoor sensor readings and outdoor forecast
-// into a single, source-agnostic climate picture. As new integrations are added
-// (thermostats, HVAC, home weather stations, NWS), they slot into Indoor.Readings
-// or Outdoor.Current without changing this response shape.
-func (s *Service) ClimateSnapshot(ctx context.Context) (contracts.ClimateSnapshot, error) {
-	now := time.Now().UTC()
+func providerStatusByComponent(statuses []contracts.ProviderStatus, component string) *contracts.ProviderStatus {
+	for _, status := range statuses {
+		if status.Component == component {
+			copyStatus := status
+			return &copyStatus
+		}
+	}
+	return nil
+}
 
-	rawReadings, err := s.repo.LatestReadings(ctx)
+func staleReasonForStatus(status contracts.ProviderStatus) string {
+	if status.LastError != "" {
+		return "provider_error"
+	}
+	if status.Stale {
+		return "expired"
+	}
+	return ""
+}
+
+func mustStatuses(statuses []contracts.ProviderStatus, err error) []contracts.ProviderStatus {
 	if err != nil {
-		return contracts.ClimateSnapshot{}, err
+		return nil
 	}
-
-	var latestReadingAt *time.Time
-	sourceSet := make(map[string]struct{})
-	indoorReadings := make([]contracts.ClimateMetric, 0, len(rawReadings))
-	for _, rd := range rawReadings {
-		indoorReadings = append(indoorReadings, normalizeReading(rd))
-		sourceSet[rd.Source] = struct{}{}
-		if latestReadingAt == nil || rd.RecordedAt.After(*latestReadingAt) {
-			t := rd.RecordedAt
-			latestReadingAt = &t
-		}
-	}
-
-	indoorSources := make([]string, 0, len(sourceSet))
-	for src := range sourceSet {
-		indoorSources = append(indoorSources, src)
-	}
-	sort.Strings(indoorSources)
-
-	indoorStale := latestReadingAt == nil || now.Sub(*latestReadingAt) > 2*s.cfg.Polling.SensorInterval
-	indoor := contracts.IndoorClimate{
-		Sources:       indoorSources,
-		Readings:      indoorReadings,
-		LastReadingAt: latestReadingAt,
-		Stale:         indoorStale,
-	}
-
-	outdoor := contracts.OutdoorClimate{
-		Sources: []string{},
-		Current: []contracts.ClimateMetric{},
-	}
-	if s.cfg.Features.EnableForecast {
-		forecast, ferr := s.LatestForecast(ctx)
-		if ferr == nil && len(forecast.Points) > 0 {
-			ft := forecast.FetchedAt
-			fu := forecast.FreshUntil
-			outdoor.Sources = []string{"open_meteo"}
-			outdoor.Stale = forecast.Stale
-			outdoor.LastFetchedAt = &ft
-			outdoor.FreshUntil = &fu
-			if pt := closestForecastPoint(forecast.Points, now); pt != nil {
-				outdoor.Current = outdoorMetricsFromPoint(*pt, "open_meteo")
-			}
-			outdoor.Forecast = upcomingForecastPoints(forecast.Points, now, 24*time.Hour)
-		}
-	}
-
-	return contracts.ClimateSnapshot{
-		StationID:   s.cfg.Station.ID,
-		GeneratedAt: now,
-		Indoor:      indoor,
-		Outdoor:     outdoor,
-	}, nil
-}
-
-func (s *Service) staleReasonForMissingForecast(state serviceState) string {
-	if state.lastForecastFailureKind != "" {
-		return state.lastForecastFailureKind
-	}
-	return "unavailable"
+	return statuses
 }

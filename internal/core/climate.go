@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"polar/pkg/contracts"
@@ -60,59 +61,40 @@ func normalizeReading(rd contracts.Reading) contracts.ClimateMetric {
 	}
 }
 
-func outdoorMetricsFromPoint(pt contracts.ForecastPoint, source string) []contracts.ClimateMetric {
-	at := pt.Time
+func currentWeatherMetrics(current contracts.WeatherCurrent) []contracts.ClimateMetric {
+	at := current.RecordedAt
 	return []contracts.ClimateMetric{
 		{
 			Name: "temperature", DisplayName: "Temperature",
-			Value: pt.TemperatureC, Unit: "°C", DisplayValue: fmt.Sprintf("%.1f °C", pt.TemperatureC),
-			Domain: "thermal", Source: source, Quality: contracts.QualityEstimated, RecordedAt: at,
+			Value: current.TemperatureC, Unit: "°C", DisplayValue: fmt.Sprintf("%.1f °C", current.TemperatureC),
+			Domain: "thermal", Source: current.Source, Quality: current.Quality, RecordedAt: at,
 		},
 		{
 			Name: "humidity", DisplayName: "Relative Humidity",
-			Value: pt.HumidityPct, Unit: "%", DisplayValue: fmt.Sprintf("%.0f%%", pt.HumidityPct),
-			Domain: "comfort", Source: source, Quality: contracts.QualityEstimated, RecordedAt: at,
+			Value: current.HumidityPct, Unit: "%", DisplayValue: fmt.Sprintf("%.0f%%", current.HumidityPct),
+			Domain: "comfort", Source: current.Source, Quality: current.Quality, RecordedAt: at,
 		},
 		{
 			Name: "wind_speed", DisplayName: "Wind Speed",
-			Value: pt.WindSpeedMS, Unit: "m/s", DisplayValue: fmt.Sprintf("%.1f m/s", pt.WindSpeedMS),
-			Domain: "weather", Source: source, Quality: contracts.QualityEstimated, RecordedAt: at,
+			Value: current.WindSpeedMS, Unit: "m/s", DisplayValue: fmt.Sprintf("%.1f m/s", current.WindSpeedMS),
+			Domain: "weather", Source: current.Source, Quality: current.Quality, RecordedAt: at,
 		},
 		{
-			Name: "precipitation", DisplayName: "Precipitation",
-			Value: pt.PrecipMM, Unit: "mm", DisplayValue: fmt.Sprintf("%.1f mm", pt.PrecipMM),
-			Domain: "weather", Source: source, Quality: contracts.QualityEstimated, RecordedAt: at,
+			Name: "pressure", DisplayName: "Pressure",
+			Value: current.PressureHPa, Unit: "hPa", DisplayValue: fmt.Sprintf("%.1f hPa", current.PressureHPa),
+			Domain: "weather", Source: current.Source, Quality: current.Quality, RecordedAt: at,
 		},
 	}
 }
 
-// closestForecastPoint returns the forecast point whose time is nearest to now.
-func closestForecastPoint(points []contracts.ForecastPoint, now time.Time) *contracts.ForecastPoint {
-	if len(points) == 0 {
-		return nil
+func statusFor(last time.Time, maxLag time.Duration) string {
+	if last.IsZero() {
+		return "starting"
 	}
-	best := &points[0]
-	bestDelta := absDuration(points[0].Time.Sub(now))
-	for i := 1; i < len(points); i++ {
-		d := absDuration(points[i].Time.Sub(now))
-		if d < bestDelta {
-			best = &points[i]
-			bestDelta = d
-		}
+	if time.Since(last) > maxLag {
+		return "degraded"
 	}
-	return best
-}
-
-// upcomingForecastPoints returns all forecast points within [now, now+window].
-func upcomingForecastPoints(points []contracts.ForecastPoint, now time.Time, window time.Duration) []contracts.ForecastPoint {
-	cutoff := now.Add(window)
-	out := make([]contracts.ForecastPoint, 0)
-	for _, pt := range points {
-		if !pt.Time.Before(now) && !pt.Time.After(cutoff) {
-			out = append(out, pt)
-		}
-	}
-	return out
+	return "healthy"
 }
 
 func absDuration(d time.Duration) time.Duration {
@@ -120,4 +102,20 @@ func absDuration(d time.Duration) time.Duration {
 		return -d
 	}
 	return d
+}
+
+func aggregateSources(values ...string) []string {
+	set := make(map[string]struct{})
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		set[value] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }

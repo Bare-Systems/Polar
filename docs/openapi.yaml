@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Polar API
-  version: 0.1.0
+  version: 0.2.0
 servers:
   - url: http://localhost:8080
 security:
@@ -30,17 +30,22 @@ paths:
     get:
       responses:
         '200':
-          description: Capabilities
+          description: Target-aware service capabilities
+  /v1/targets:
+    get:
+      responses:
+        '200':
+          description: Configured monitoring targets
   /v1/station/health:
     get:
       responses:
         '200':
-          description: Health
+          description: Service health
   /v1/readings/latest:
     get:
       responses:
         '200':
-          description: Latest readings
+          description: Latest indoor readings
   /v1/readings:
     get:
       parameters:
@@ -66,12 +71,87 @@ paths:
           description: Optional Go duration for downsampling (for example 5m, 1h)
       responses:
         '200':
-          description: Historical readings
+          description: Historical indoor readings
   /v1/forecast/latest:
     get:
+      parameters:
+        - in: query
+          name: target
+          schema:
+            type: string
       responses:
         '200':
-          description: Latest forecast
+          description: Compatibility alias for latest target weather forecast
+  /v1/weather/current:
+    get:
+      parameters:
+        - in: query
+          name: target
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Latest target weather conditions
+  /v1/weather/forecast:
+    get:
+      parameters:
+        - in: query
+          name: target
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Latest target weather forecast
+  /v1/weather/alerts:
+    get:
+      parameters:
+        - in: query
+          name: target
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active weather alerts for the target
+  /v1/air-quality/current:
+    get:
+      parameters:
+        - in: query
+          name: target
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Latest target air quality snapshot
+  /v1/air-quality/forecast:
+    get:
+      parameters:
+        - in: query
+          name: target
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Latest target air quality forecast
+  /v1/climate/snapshot:
+    get:
+      parameters:
+        - in: query
+          name: target
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Combined dashboard snapshot for a target
+  /v1/live:
+    get:
+      parameters:
+        - in: query
+          name: target
+          schema:
+            type: string
+      responses:
+        '101':
+          description: WebSocket upgrade for live dashboard updates
   /v1/diagnostics/data-gaps:
     get:
       responses:

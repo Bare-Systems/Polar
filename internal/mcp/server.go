@@ -75,9 +75,13 @@ func (s *Server) dispatch(r *http.Request, method string, params map[string]any)
 		return nil, rpcErr(-32003, auth.Message(err)), auth.StatusCode(err)
 	}
 
+	target := paramString(params, "target")
+
 	switch method {
 	case "list_capabilities":
 		return s.svc.Capabilities(), nil, http.StatusOK
+	case "list_targets":
+		return s.svc.Targets(), nil, http.StatusOK
 	case "get_station_health":
 		return s.svc.StationHealth(), nil, http.StatusOK
 	case "get_latest_readings":
@@ -87,18 +91,18 @@ func (s *Server) dispatch(r *http.Request, method string, params map[string]any)
 		}
 		return v, nil, http.StatusOK
 	case "query_readings":
-		metric, _ := params["metric"].(string)
+		metric := paramString(params, "metric")
 		if metric == "" {
 			return nil, rpcErr(-32602, "metric required"), http.StatusBadRequest
 		}
 		from := time.Now().UTC().Add(-1 * time.Hour)
 		to := time.Now().UTC()
-		if fs, ok := params["from"].(string); ok && fs != "" {
+		if fs := paramString(params, "from"); fs != "" {
 			if ft, err := time.Parse(time.RFC3339, fs); err == nil {
 				from = ft
 			}
 		}
-		if ts, ok := params["to"].(string); ok && ts != "" {
+		if ts := paramString(params, "to"); ts != "" {
 			if tt, err := time.Parse(time.RFC3339, ts); err == nil {
 				to = tt
 			}
@@ -108,8 +112,38 @@ func (s *Server) dispatch(r *http.Request, method string, params map[string]any)
 			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
 		}
 		return v, nil, http.StatusOK
-	case "get_forecast":
-		v, err := s.svc.LatestForecast(r.Context())
+	case "get_forecast", "get_weather_forecast":
+		v, err := s.svc.ForecastForTarget(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return v, nil, http.StatusOK
+	case "get_weather_current":
+		v, err := s.svc.WeatherCurrent(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return v, nil, http.StatusOK
+	case "get_weather_alerts":
+		v, err := s.svc.WeatherAlerts(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return v, nil, http.StatusOK
+	case "get_air_quality_current":
+		v, err := s.svc.AirQualityCurrent(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return v, nil, http.StatusOK
+	case "get_air_quality_forecast":
+		v, err := s.svc.AirQualityForecast(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return v, nil, http.StatusOK
+	case "get_climate_snapshot":
+		v, err := s.svc.ClimateSnapshotForTarget(r.Context(), target)
 		if err != nil {
 			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
 		}
@@ -123,10 +157,7 @@ func (s *Server) dispatch(r *http.Request, method string, params map[string]any)
 	case "get_audit_events":
 		from := time.Now().UTC().Add(-24 * time.Hour)
 		to := time.Now().UTC()
-		eventType := ""
-		if v, ok := params["type"].(string); ok {
-			eventType = v
-		}
+		eventType := paramString(params, "type")
 		v, err := s.svc.AuditEvents(r.Context(), from, to, eventType)
 		if err != nil {
 			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
@@ -141,9 +172,9 @@ func (s *Server) dispatch(r *http.Request, method string, params map[string]any)
 
 func methodScopes(method string) []string {
 	switch method {
-	case "list_capabilities", "get_station_health", "get_latest_readings", "query_readings", "get_data_gaps":
+	case "list_capabilities", "list_targets", "get_station_health", "get_latest_readings", "query_readings", "get_data_gaps", "get_weather_current", "get_weather_alerts", "get_air_quality_current", "get_climate_snapshot":
 		return []string{auth.ScopeReadTelemetry}
-	case "get_forecast":
+	case "get_forecast", "get_weather_forecast", "get_air_quality_forecast":
 		return []string{auth.ScopeReadForecast}
 	case "get_audit_events":
 		return []string{auth.ScopeReadAudit}
@@ -176,4 +207,14 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 func (r *statusRecorder) WriteHeader(statusCode int) {
 	r.status = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func paramString(params map[string]any, key string) string {
+	if params == nil {
+		return ""
+	}
+	if v, ok := params[key].(string); ok {
+		return v
+	}
+	return ""
 }

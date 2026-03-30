@@ -13,7 +13,7 @@ import (
 )
 
 type ForecastClient interface {
-	Fetch(ctx context.Context, stationID string, lat, lon float64, endpoint string) (contracts.ForecastSnapshot, error)
+	Fetch(ctx context.Context, target contracts.MonitorTarget, endpoint string) (contracts.ForecastSnapshot, error)
 }
 
 type OpenMeteoClient struct {
@@ -34,14 +34,14 @@ type openMeteoResp struct {
 	} `json:"hourly"`
 }
 
-func (c *OpenMeteoClient) Fetch(ctx context.Context, stationID string, lat, lon float64, endpoint string) (contracts.ForecastSnapshot, error) {
+func (c *OpenMeteoClient) Fetch(ctx context.Context, target contracts.MonitorTarget, endpoint string) (contracts.ForecastSnapshot, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return contracts.ForecastSnapshot{}, err
 	}
 	q := u.Query()
-	q.Set("latitude", strconv.FormatFloat(lat, 'f', 4, 64))
-	q.Set("longitude", strconv.FormatFloat(lon, 'f', 4, 64))
+	q.Set("latitude", strconv.FormatFloat(target.Latitude, 'f', 4, 64))
+	q.Set("longitude", strconv.FormatFloat(target.Longitude, 'f', 4, 64))
 	q.Set("hourly", "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation")
 	q.Set("forecast_days", "2")
 	u.RawQuery = q.Encode()
@@ -64,9 +64,8 @@ func (c *OpenMeteoClient) Fetch(ctx context.Context, stationID string, lat, lon 
 		return contracts.ForecastSnapshot{}, err
 	}
 
-	n := len(payload.Hourly.Time)
-	points := make([]contracts.ForecastPoint, 0, n)
-	for i := 0; i < n; i++ {
+	points := make([]contracts.ForecastPoint, 0, len(payload.Hourly.Time))
+	for i := range payload.Hourly.Time {
 		tm, err := time.Parse(time.RFC3339, payload.Hourly.Time[i]+":00Z")
 		if err != nil {
 			continue
@@ -88,11 +87,13 @@ func (c *OpenMeteoClient) Fetch(ctx context.Context, stationID string, lat, lon 
 	}
 
 	return contracts.ForecastSnapshot{
-		StationID: stationID,
-		Provider:  "open-meteo",
-		Latitude:  lat,
-		Longitude: lon,
-		FetchedAt: time.Now().UTC(),
-		Points:    points,
+		TargetID:   target.ID,
+		StationID:  target.ID,
+		Provider:   "open-meteo",
+		Latitude:   target.Latitude,
+		Longitude:  target.Longitude,
+		FetchedAt:  time.Now().UTC(),
+		Points:     points,
+		FreshUntil: time.Now().UTC().Add(2 * time.Hour),
 	}, nil
 }

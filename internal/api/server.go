@@ -1,10 +1,15 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"polar/internal/auth"
 	"polar/internal/config"
@@ -12,9 +17,10 @@ import (
 )
 
 type Server struct {
-	cfg   config.Config
-	svc   *core.Service
-	authz *auth.Auth
+	cfg      config.Config
+	svc      *core.Service
+	authz    *auth.Auth
+	upgrader websocket.Upgrader
 }
 
 type statusRecorder struct {
@@ -23,7 +29,14 @@ type statusRecorder struct {
 }
 
 func NewServer(cfg config.Config, svc *core.Service, authz *auth.Auth) *Server {
-	return &Server{cfg: cfg, svc: svc, authz: authz}
+	return &Server{
+		cfg:   cfg,
+		svc:   svc,
+		authz: authz,
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(_ *http.Request) bool { return true },
+		},
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -36,10 +49,17 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/v1/readings", s.instrument("rest", "/v1/readings", s.authz.Require(http.HandlerFunc(s.queryReadings), auth.ScopeReadTelemetry)))
 	mux.Handle("/v1/forecast/latest", s.instrument("rest", "/v1/forecast/latest", s.authz.Require(http.HandlerFunc(s.forecastLatest), auth.ScopeReadForecast)))
 	mux.Handle("/v1/forecast", s.instrument("rest", "/v1/forecast", s.authz.Require(http.HandlerFunc(s.forecastLatest), auth.ScopeReadForecast)))
+	mux.Handle("/v1/weather/current", s.instrument("rest", "/v1/weather/current", s.authz.Require(http.HandlerFunc(s.weatherCurrent), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/weather/forecast", s.instrument("rest", "/v1/weather/forecast", s.authz.Require(http.HandlerFunc(s.forecastLatest), auth.ScopeReadForecast)))
+	mux.Handle("/v1/weather/alerts", s.instrument("rest", "/v1/weather/alerts", s.authz.Require(http.HandlerFunc(s.weatherAlerts), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/air-quality/current", s.instrument("rest", "/v1/air-quality/current", s.authz.Require(http.HandlerFunc(s.airQualityCurrent), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/air-quality/forecast", s.instrument("rest", "/v1/air-quality/forecast", s.authz.Require(http.HandlerFunc(s.airQualityForecast), auth.ScopeReadForecast)))
+	mux.Handle("/v1/targets", s.instrument("rest", "/v1/targets", s.authz.Require(http.HandlerFunc(s.targets), auth.ScopeReadTelemetry)))
 	mux.Handle("/v1/diagnostics/data-gaps", s.instrument("rest", "/v1/diagnostics/data-gaps", s.authz.Require(http.HandlerFunc(s.dataGaps), auth.ScopeReadTelemetry)))
 	mux.Handle("/v1/audit/events", s.instrument("rest", "/v1/audit/events", s.authz.Require(http.HandlerFunc(s.auditEvents), auth.ScopeReadAudit)))
 	mux.Handle("/v1/metrics", s.instrument("rest", "/v1/metrics", s.authz.Require(http.HandlerFunc(s.metrics), auth.ScopeAdminConfig)))
 	mux.Handle("/v1/climate/snapshot", s.instrument("rest", "/v1/climate/snapshot", s.authz.Require(http.HandlerFunc(s.climateSnapshot), auth.ScopeReadTelemetry)))
+	mux.Handle("/v1/live", s.instrument("rest", "/v1/live", s.authz.Require(http.HandlerFunc(s.live), auth.ScopeReadTelemetry)))
 	return mux
 }
 
@@ -98,12 +118,52 @@ func (s *Server) queryReadings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) forecastLatest(w http.ResponseWriter, r *http.Request) {
-	forecast, err := s.svc.LatestForecast(r.Context())
+	forecast, err := s.svc.ForecastForTarget(r.Context(), r.URL.Query().Get("target"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, forecast)
+}
+
+func (s *Server) weatherCurrent(w http.ResponseWriter, r *http.Request) {
+	current, err := s.svc.WeatherCurrent(r.Context(), r.URL.Query().Get("target"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, current)
+}
+
+func (s *Server) weatherAlerts(w http.ResponseWriter, r *http.Request) {
+	alerts, err := s.svc.WeatherAlerts(r.Context(), r.URL.Query().Get("target"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, alerts)
+}
+
+func (s *Server) airQualityCurrent(w http.ResponseWriter, r *http.Request) {
+	current, err := s.svc.AirQualityCurrent(r.Context(), r.URL.Query().Get("target"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, current)
+}
+
+func (s *Server) airQualityForecast(w http.ResponseWriter, r *http.Request) {
+	forecast, err := s.svc.AirQualityForecast(r.Context(), r.URL.Query().Get("target"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, forecast)
+}
+
+func (s *Server) targets(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.Targets())
 }
 
 func (s *Server) dataGaps(w http.ResponseWriter, r *http.Request) {
@@ -131,12 +191,73 @@ func (s *Server) auditEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) climateSnapshot(w http.ResponseWriter, r *http.Request) {
-	snap, err := s.svc.ClimateSnapshot(r.Context())
+	snap, err := s.svc.ClimateSnapshotForTarget(r.Context(), r.URL.Query().Get("target"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) live(w http.ResponseWriter, r *http.Request) {
+	targetID := r.URL.Query().Get("target")
+	ch, err := s.svc.Subscribe(targetID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if targetID == "" {
+		targetID = s.cfg.DefaultTargetID()
+	}
+	defer s.svc.Unsubscribe(targetID, ch)
+
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	initial, err := s.svc.ClimateSnapshotForTarget(r.Context(), targetID)
+	if err == nil {
+		if err := conn.WriteJSON(map[string]any{"type": "snapshot", "snapshot": initial}); err != nil {
+			return
+		}
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	})
+
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-done:
+			return
+		case update := <-ch:
+			if err := conn.WriteJSON(update); err != nil {
+				return
+			}
+		case <-pingTicker.C:
+			if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second)); err != nil {
+				return
+			}
+		}
+	}
 }
 
 func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
@@ -197,4 +318,18 @@ func writeJSON(w http.ResponseWriter, code int, payload any) {
 func (r *statusRecorder) WriteHeader(statusCode int) {
 	r.status = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
 }

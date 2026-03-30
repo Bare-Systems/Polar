@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log"
 	"net/http"
@@ -10,8 +9,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"polar/internal/api"
 	"polar/internal/auth"
@@ -29,13 +26,13 @@ func main() {
 		log.Fatalf("config load failed: %v", err)
 	}
 
-	db, err := sql.Open("sqlite", cfg.Storage.SQLitePath)
+	db, dialect, err := storage.Open(cfg.Storage)
 	if err != nil {
-		log.Fatalf("sqlite open failed: %v", err)
+		log.Fatalf("database open failed: %v", err)
 	}
 	defer db.Close()
 
-	repo := storage.NewRepository(db)
+	repo := storage.NewRepository(db, dialect)
 	if err := repo.Migrate(context.Background()); err != nil {
 		log.Fatalf("migrate failed: %v", err)
 	}
@@ -48,8 +45,12 @@ func main() {
 		log.Printf("collector: simulator")
 		collectorSvc = collector.NewSimulatorService(cfg)
 	}
-	forecastClient := providers.NewOpenMeteoClient(http.DefaultClient)
-	svc := core.NewService(cfg, repo, collectorSvc, forecastClient)
+
+	httpClient := &http.Client{Timeout: 20 * time.Second}
+	weatherClient := providers.NewNOAAClient(cfg.Provider.NOAABaseURL, cfg.Provider.NOAAUserAgent, httpClient)
+	fallbackClient := providers.NewOpenMeteoClient(httpClient)
+	airClient := providers.NewAirNowClient(cfg.Provider.AirNowURL, cfg.Provider.AirNowToken, httpClient)
+	svc := core.NewService(cfg, repo, collectorSvc, weatherClient, fallbackClient, airClient)
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()

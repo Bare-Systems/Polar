@@ -26,11 +26,22 @@ func baseConfig() config.Config {
 		Profile:  "simulator",
 		Station:  config.StationConfig{ID: "test", Latitude: 1, Longitude: 1},
 		Server:   config.ServerConfig{ListenAddr: ":0", MCPListenAddr: ":0"},
-		Storage:  config.StorageConfig{SQLitePath: ":memory:"},
+		Storage:  config.StorageConfig{Driver: storage.DialectSQLite, SQLitePath: ":memory:"},
 		Auth:     config.AuthConfig{ServiceToken: "dev-token"},
-		Features: config.FeatureFlags{EnableForecast: false, EnableMCP: true},
-		Polling:  config.PollingConfig{SensorInterval: 1 * time.Second, ForecastInterval: 1 * time.Hour},
-		Provider: config.ProviderConfig{OpenMeteoURL: "https://example.com"},
+		Features: config.FeatureFlags{EnableForecast: false, EnableMCP: true, EnableLive: true},
+		Polling: config.PollingConfig{
+			SensorInterval:     1 * time.Second,
+			ForecastInterval:   1 * time.Hour,
+			WeatherInterval:    1 * time.Hour,
+			AirQualityInterval: 1 * time.Hour,
+			AlertInterval:      1 * time.Hour,
+		},
+		Provider: config.ProviderConfig{
+			OpenMeteoURL:  "https://example.com",
+			NOAABaseURL:   "https://example.com",
+			NOAAUserAgent: "polar-test",
+			AirNowURL:     "https://example.com",
+		},
 	}
 }
 
@@ -40,11 +51,11 @@ func TestHealthEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := storage.NewRepository(db)
+	repo := storage.NewRepository(db, storage.DialectSQLite)
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), providers.NewOpenMeteoClient(http.DefaultClient))
+	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), stubWeatherClient{}, providers.NewOpenMeteoClient(http.DefaultClient), stubAirQualityClient{})
 	server := api.NewServer(cfg, svc, auth.New(cfg.Auth.ServiceToken))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -62,11 +73,11 @@ func TestCapabilitiesRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := storage.NewRepository(db)
+	repo := storage.NewRepository(db, storage.DialectSQLite)
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), providers.NewOpenMeteoClient(http.DefaultClient))
+	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), stubWeatherClient{}, providers.NewOpenMeteoClient(http.DefaultClient), stubAirQualityClient{})
 	server := api.NewServer(cfg, svc, auth.New(cfg.Auth.ServiceToken))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
@@ -84,11 +95,11 @@ func TestReadyzNotReadyBeforeCollectorRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := storage.NewRepository(db)
+	repo := storage.NewRepository(db, storage.DialectSQLite)
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), providers.NewOpenMeteoClient(http.DefaultClient))
+	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), stubWeatherClient{}, providers.NewOpenMeteoClient(http.DefaultClient), stubAirQualityClient{})
 	server := api.NewServer(cfg, svc, auth.New(cfg.Auth.ServiceToken))
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
@@ -113,11 +124,11 @@ func TestReadyzReadyAfterCollectorRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := storage.NewRepository(db)
+	repo := storage.NewRepository(db, storage.DialectSQLite)
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), providers.NewOpenMeteoClient(http.DefaultClient))
+	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), stubWeatherClient{}, providers.NewOpenMeteoClient(http.DefaultClient), stubAirQualityClient{})
 	if err := svc.PullSensorReadings(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +156,11 @@ func TestQueryReadingsResolutionAggregation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := storage.NewRepository(db)
+	repo := storage.NewRepository(db, storage.DialectSQLite)
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), providers.NewOpenMeteoClient(http.DefaultClient))
+	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), stubWeatherClient{}, providers.NewOpenMeteoClient(http.DefaultClient), stubAirQualityClient{})
 	server := api.NewServer(cfg, svc, auth.New(cfg.Auth.ServiceToken))
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -227,11 +238,11 @@ func TestQueryReadingsInvalidResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := storage.NewRepository(db)
+	repo := storage.NewRepository(db, storage.DialectSQLite)
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), providers.NewOpenMeteoClient(http.DefaultClient))
+	svc := core.NewService(cfg, repo, collector.NewSimulatorService(cfg), stubWeatherClient{}, providers.NewOpenMeteoClient(http.DefaultClient), stubAirQualityClient{})
 	server := api.NewServer(cfg, svc, auth.New(cfg.Auth.ServiceToken))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/readings?metric=temperature&resolution=0s", nil)

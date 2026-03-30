@@ -10,6 +10,7 @@
     "mcp_listen_addr": ":8094"
   },
   "storage": {
+    "driver": "sqlite",
     "sqlite_path": "/var/lib/polar/polar.db"
   },
   "auth": {
@@ -18,18 +19,42 @@
   "features": {
     "enable_forecast": true,
     "enable_mcp": true,
-    "enable_airthings": true
+    "enable_airthings": true,
+    "enable_live": true
   },
   "polling": {
     "sensor_interval": 300000000000,
-    "forecast_interval": 1800000000000
+    "forecast_interval": 1800000000000,
+    "weather_interval": 900000000000,
+    "air_quality_interval": 1800000000000,
+    "alert_interval": 300000000000
   },
   "provider": {
-    "open_meteo_url": "https://api.open-meteo.com/v1/forecast"
+    "open_meteo_url": "https://api.open-meteo.com/v1/forecast",
+    "noaa_base_url": "https://api.weather.gov",
+    "noaa_user_agent": "Polar/0.2 (ops@example.com)",
+    "airnow_url": "https://www.airnowapi.org/aq",
+    "airnow_token": ""
   },
   "airthings": {
     "client_id": "replace-me",
     "client_secret": "replace-me",
     "device_ids": []
+  },
+  "monitoring": {
+    "default_target_id": "polar-home-01",
+    "targets": [
+      {
+        "id": "polar-home-01",
+        "display_name": "Primary Home",
+        "latitude": 40.7128,
+        "longitude": -74.0060,
+        "zip_code": "10001",
+        "labels": ["home", "default"],
+        "include_indoor": true,
+        "enable_weather": true,
+        "enable_air_quality": true
+      }
+    ]
   }
 }

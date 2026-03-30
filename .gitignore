@@ -1,9 +1,10 @@
 /bin/
+/dist/
 /polar.db
 *.out
 .DS_Store
 .gocache/
-
+.env
 
 # Agent Context
 changes/
