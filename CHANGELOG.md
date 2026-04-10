@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Ignored the repository-root `blink.toml` and `BLINK.md` and stopped tracking them so homelab-specific Blink targets and operator notes stay local-only.
+- Collapsed REST and MCP onto a single port (`6703`). `main.go` now mounts the MCP handler at `/mcp` on the REST mux when `POLAR_MCP_ADDR == POLAR_LISTEN_ADDR` instead of starting a second server. `blink.toml` updated: port `6702` → `6703`, second `-p` publish and separate `POLAR_MCP_ADDR` removed.
+
 ## 0.2.0 - 2026-03-29
 
 - Added target-aware monitoring for dashboard-focused home and area climate views

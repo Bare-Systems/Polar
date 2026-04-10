@@ -63,22 +63,33 @@ func main() {
 	apiServer := api.NewServer(cfg, svc, authz)
 	mcpServer := mcp.NewServer(cfg, svc, authz)
 
-	apiHTTP := &http.Server{Addr: cfg.Server.ListenAddr, Handler: apiServer.Handler()}
+	var apiHandler http.Handler = apiServer.Handler()
+	var mcpHTTP *http.Server
+
+	if cfg.Features.EnableMCP {
+		if cfg.Server.MCPListenAddr == cfg.Server.ListenAddr {
+			// Single-port mode: mount /mcp on the same mux as the REST server.
+			combined := http.NewServeMux()
+			combined.Handle("/mcp", mcpServer.Handler())
+			combined.Handle("/", apiServer.Handler())
+			apiHandler = combined
+			log.Printf("MCP mounted at %s/mcp (single-port mode)", cfg.Server.ListenAddr)
+		} else {
+			mcpHTTP = &http.Server{Addr: cfg.Server.MCPListenAddr, Handler: mcpServer.Handler()}
+			go func() {
+				log.Printf("MCP listening on %s", cfg.Server.MCPListenAddr)
+				errCh <- mcpHTTP.ListenAndServe()
+			}()
+		}
+	}
+
+	apiHTTP := &http.Server{Addr: cfg.Server.ListenAddr, Handler: apiHandler}
 
 	errCh := make(chan error, 2)
 	go func() {
 		log.Printf("REST listening on %s", cfg.Server.ListenAddr)
 		errCh <- apiHTTP.ListenAndServe()
 	}()
-
-	var mcpHTTP *http.Server
-	if cfg.Features.EnableMCP {
-		mcpHTTP = &http.Server{Addr: cfg.Server.MCPListenAddr, Handler: mcpServer.Handler()}
-		go func() {
-			log.Printf("MCP listening on %s", cfg.Server.MCPListenAddr)
-			errCh <- mcpHTTP.ListenAndServe()
-		}()
-	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

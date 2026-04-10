@@ -37,7 +37,7 @@ Scoped tokens are also supported through `auth.tokens` in config JSON:
 
 REST health: `GET http://localhost:8080/healthz`
 REST readiness: `GET http://localhost:8080/readyz`
-MCP health: `GET http://localhost:8081/healthz`
+MCP health: `GET http://localhost:8080/healthz`
 Live feed: `GET ws://localhost:8080/v1/live?target=<target-id>`
 
 ## Configuration Notes
@@ -97,4 +97,4 @@ Scope mapping:
 - `get_audit_events`
 - `get_metrics`
 
-POST JSON-RPC requests to `/mcp` on port 8081.
+POST JSON-RPC requests to `/mcp` on the same port as the REST server (single-port mode when `POLAR_MCP_ADDR == POLAR_LISTEN_ADDR`; default dev port: 8080).
