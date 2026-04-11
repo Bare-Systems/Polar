@@ -1,0 +1,9 @@
+.git
+.github
+.gocache
+bin
+dist
+*.md
+CHANGELOG*
+ROADMAP*
+test

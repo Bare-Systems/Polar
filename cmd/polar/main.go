@@ -66,6 +66,8 @@ func main() {
 	var apiHandler http.Handler = apiServer.Handler()
 	var mcpHTTP *http.Server
 
+	errCh := make(chan error, 2)
+
 	if cfg.Features.EnableMCP {
 		if cfg.Server.MCPListenAddr == cfg.Server.ListenAddr {
 			// Single-port mode: mount /mcp on the same mux as the REST server.
@@ -84,8 +86,6 @@ func main() {
 	}
 
 	apiHTTP := &http.Server{Addr: cfg.Server.ListenAddr, Handler: apiHandler}
-
-	errCh := make(chan error, 2)
 	go func() {
 		log.Printf("REST listening on %s", cfg.Server.ListenAddr)
 		errCh <- apiHTTP.ListenAndServe()
