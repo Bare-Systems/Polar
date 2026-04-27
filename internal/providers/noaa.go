@@ -199,11 +199,12 @@ func (c *NOAAClient) fetchForecast(ctx context.Context, target contracts.Monitor
 	var payload struct {
 		Properties struct {
 			Periods []struct {
-				StartTime        string  `json:"startTime"`
-				Temperature      float64 `json:"temperature"`
-				TemperatureUnit  string  `json:"temperatureUnit"`
-				WindSpeed        string  `json:"windSpeed"`
-				ShortForecast    string  `json:"shortForecast"`
+				StartTime     string `json:"startTime"`
+				Temperature   float64 `json:"temperature"`
+				TemperatureUnit string `json:"temperatureUnit"`
+				WindSpeed     string  `json:"windSpeed"`
+				WindDirection string  `json:"windDirection"` // cardinal, e.g. "NNW"
+				ShortForecast string  `json:"shortForecast"`
 				RelativeHumidity struct {
 					Value *float64 `json:"value"`
 				} `json:"relativeHumidity"`
@@ -224,15 +225,17 @@ func (c *NOAAClient) fetchForecast(ctx context.Context, target contracts.Monitor
 			continue
 		}
 		point := contracts.ForecastPoint{
-			Time:         tm.UTC(),
-			TemperatureC: temperatureToC(period.Temperature, period.TemperatureUnit),
-			WindSpeedMS:  parseWindSpeed(period.WindSpeed),
+			Time:             tm.UTC(),
+			TemperatureC:     temperatureToC(period.Temperature, period.TemperatureUnit),
+			WindSpeedMS:      parseWindSpeed(period.WindSpeed),
+			WindDirectionDeg: cardinalToDeg(period.WindDirection),
 		}
 		if period.RelativeHumidity.Value != nil {
 			point.HumidityPct = *period.RelativeHumidity.Value
 		}
+		// ProbabilityOfPrecipitation is a percentage (0–100), not an mm value.
 		if period.ProbabilityOfPrecipitation.Value != nil {
-			point.PrecipMM = *period.ProbabilityOfPrecipitation.Value
+			point.PrecipitationProbabilityPct = int(*period.ProbabilityOfPrecipitation.Value)
 		}
 		points = append(points, point)
 	}
@@ -368,6 +371,47 @@ func parseWindRange(raw string) float64 {
 		return 0
 	}
 	return (a + b) / 2
+}
+
+// cardinalToDeg converts compass directions (e.g. "NNW") to degrees (0–360).
+// Returns 0 if the direction is empty or unrecognised.
+func cardinalToDeg(dir string) float64 {
+	switch strings.ToUpper(strings.TrimSpace(dir)) {
+	case "N":
+		return 0
+	case "NNE":
+		return 22.5
+	case "NE":
+		return 45
+	case "ENE":
+		return 67.5
+	case "E":
+		return 90
+	case "ESE":
+		return 112.5
+	case "SE":
+		return 135
+	case "SSE":
+		return 157.5
+	case "S":
+		return 180
+	case "SSW":
+		return 202.5
+	case "SW":
+		return 225
+	case "WSW":
+		return 247.5
+	case "W":
+		return 270
+	case "WNW":
+		return 292.5
+	case "NW":
+		return 315
+	case "NNW":
+		return 337.5
+	default:
+		return 0
+	}
 }
 
 func splitAndTrim(raw, sep string) []string {

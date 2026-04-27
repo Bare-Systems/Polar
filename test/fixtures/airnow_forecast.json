@@ -1,0 +1,18 @@
+[
+  {
+    "DateForecast": "2026-04-25 ",
+    "ParameterName": "PM2.5",
+    "AQI": 45,
+    "ActionDay": false,
+    "Discussion": "Air quality is good for sensitive groups.",
+    "Category": { "Name": "Good" }
+  },
+  {
+    "DateForecast": "2026-04-26 ",
+    "ParameterName": "PM2.5",
+    "AQI": 60,
+    "ActionDay": false,
+    "Discussion": "Moderate AQI expected.",
+    "Category": { "Name": "Moderate" }
+  }
+]

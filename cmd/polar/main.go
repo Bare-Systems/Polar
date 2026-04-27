@@ -37,24 +37,83 @@ func main() {
 		log.Fatalf("migrate failed: %v", err)
 	}
 
-	var collectorSvc collector.Service
+	httpClient := &http.Client{Timeout: 20 * time.Second}
+
+	// --- Collectors (B-3: MultiCollector wraps all active collectors) ---
+
+	var collectorServices []collector.Service
+
 	if cfg.Features.EnableAirthings {
 		log.Printf("collector: airthings (client_id=%s)", cfg.Airthings.ClientID)
-		collectorSvc = collector.NewAirthingsService(cfg, &http.Client{Timeout: 20 * time.Second})
-	} else {
-		log.Printf("collector: simulator")
-		collectorSvc = collector.NewSimulatorService(cfg)
+		collectorServices = append(collectorServices, collector.NewAirthingsService(cfg, httpClient))
+	}
+	if cfg.Features.EnableShelly && len(cfg.Shelly.Devices) > 0 {
+		log.Printf("collector: shelly (%d devices)", len(cfg.Shelly.Devices))
+		collectorServices = append(collectorServices, collector.NewShellyService(cfg, &http.Client{Timeout: 5 * time.Second}))
+	}
+	if cfg.Features.EnableSwitchBot && cfg.SwitchBot.Token != "" {
+		log.Printf("collector: switchbot (%d devices)", len(cfg.SwitchBot.Devices))
+		collectorServices = append(collectorServices, collector.NewSwitchBotService(cfg, httpClient))
+	}
+	if cfg.Features.EnableNetatmo && cfg.Netatmo.RefreshToken != "" {
+		log.Printf("collector: netatmo (client_id=%s)", cfg.Netatmo.ClientID)
+		collectorServices = append(collectorServices, collector.NewNetatmoService(cfg, httpClient))
 	}
 
-	httpClient := &http.Client{Timeout: 20 * time.Second}
+	// Fall back to simulator when no real collector is configured.
+	if len(collectorServices) == 0 {
+		log.Printf("collector: simulator")
+		collectorServices = append(collectorServices, collector.NewSimulatorService(cfg))
+	}
+
+	collectorSvc := collector.NewMultiCollector(collectorServices...)
+
+	// --- Weather providers ---
+
 	weatherClient := providers.NewNOAAClient(cfg.Provider.NOAABaseURL, cfg.Provider.NOAAUserAgent, httpClient)
 	fallbackClient := providers.NewOpenMeteoClient(httpClient)
 	airClient := providers.NewAirNowClient(cfg.Provider.AirNowURL, cfg.Provider.AirNowToken, httpClient)
-	svc := core.NewService(cfg, repo, collectorSvc, weatherClient, fallbackClient, airClient)
+
+	// --- Phase C context providers ---
+
+	var opts []core.ServiceOption
+
+	if cfg.Features.EnableAstronomy {
+		log.Printf("context: astronomy (in-process, no API key)")
+		opts = append(opts, core.WithAstronomy(providers.NewAstronomyProvider()))
+	}
+
+	if cfg.Features.EnableWildfire && cfg.Provider.FIRMSAPIKey != "" {
+		log.Printf("context: wildfire (NASA FIRMS, radius=%.0f km)", cfg.Provider.FIRMSRadiusKm)
+		opts = append(opts, core.WithWildfire(providers.NewFIRMSProvider(cfg.Provider.FIRMSAPIKey, cfg.Provider.FIRMSRadiusKm, httpClient)))
+	}
+
+	if (cfg.Features.EnablePollen || cfg.Features.EnableUV) && cfg.Provider.WeatherAPIKey != "" {
+		log.Printf("context: pollen/UV (WeatherAPI.com)")
+		opts = append(opts, core.WithWeatherAPI(providers.NewWeatherAPIClient(cfg.Provider.WeatherAPIKey, httpClient)))
+	}
+
+	if cfg.Features.EnablePurpleAir && cfg.Provider.PurpleAirAPIKey != "" {
+		log.Printf("context: neighbourhood AQ (PurpleAir, radius=%.0f km)", cfg.Provider.PurpleAirRadius)
+		opts = append(opts, core.WithPurpleAir(providers.NewPurpleAirProvider(cfg.Provider.PurpleAirAPIKey, cfg.Provider.PurpleAirRadius, httpClient)))
+	}
+
+	// --- Service ---
+
+	svc := core.NewService(cfg, repo, collectorSvc, weatherClient, fallbackClient, airClient, opts...)
+
+	// Seed provider license metadata on every startup.
+	svc.SeedSourceLicenses(context.Background())
+	// Seed consent grants reflecting currently configured integrations (X-4).
+	svc.SeedConsentGrants(context.Background())
+
+	// --- Schedulers ---
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
 	go svc.RunSchedulers(runCtx)
+
+	// --- HTTP servers ---
 
 	authz := auth.NewFromConfig(cfg.Auth)
 	authz.SetFailureHook(func(_ int) {

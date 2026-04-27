@@ -1,0 +1,18 @@
+{
+  "features": [
+    {
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.test",
+      "properties": {
+        "event": "Wind Advisory",
+        "severity": "Minor",
+        "urgency": "Expected",
+        "headline": "Wind Advisory issued April 25 at 10:00AM EDT",
+        "description": "South winds 20 to 30 mph with gusts up to 45 mph expected.",
+        "areaDesc": "Northern Virginia; Washington DC",
+        "effective": "2026-04-25T14:00:00+00:00",
+        "ends": "2026-04-26T00:00:00+00:00",
+        "sent": "2026-04-25T13:00:00+00:00"
+      }
+    }
+  ]
+}

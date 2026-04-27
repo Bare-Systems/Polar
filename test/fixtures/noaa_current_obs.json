@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "timestamp": "2026-04-25T14:00:00+00:00",
+    "textDescription": "Mostly Cloudy",
+    "temperature": { "value": 18.3 },
+    "relativeHumidity": { "value": 62.0 },
+    "windSpeed": { "value": 4.5 },
+    "windDirection": { "value": 270.0 },
+    "barometricPressure": { "value": 101325.0 },
+    "visibility": { "value": 16093.0 }
+  }
+}

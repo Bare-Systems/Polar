@@ -13,6 +13,7 @@ type Snapshot struct {
 	Collector   CollectorSnapshot `json:"collector"`
 	Forecast    ForecastSnapshot  `json:"forecast"`
 	Auth        AuthSnapshot      `json:"auth"`
+	SLO         SLOSnapshot       `json:"slo"`
 	Requests    []RequestSnapshot `json:"requests"`
 }
 
@@ -41,6 +42,10 @@ type AuthSnapshot struct {
 	FailuresTotal int64 `json:"failures_total"`
 }
 
+type SLOSnapshot struct {
+	BreachesTotal int64 `json:"breaches_total"`
+}
+
 type RequestSnapshot struct {
 	Surface        string    `json:"surface"`
 	Name           string    `json:"name"`
@@ -61,6 +66,7 @@ type Metrics struct {
 	forecastFailures   atomic.Int64
 	authFailures       atomic.Int64
 	auditWriteFailures atomic.Int64
+	sloBreaches        atomic.Int64 // X-3: total freshness SLO breaches observed
 
 	mu                    sync.RWMutex
 	lastCollectorSuccess  time.Time
@@ -127,6 +133,11 @@ func (m *Metrics) RecordForecastRun(points int, err error, duration time.Duratio
 
 func (m *Metrics) RecordAuthFailure() {
 	m.authFailures.Add(1)
+}
+
+// RecordSLOBreach increments the total SLO breach counter (X-3).
+func (m *Metrics) RecordSLOBreach() {
+	m.sloBreaches.Add(1)
 }
 
 func (m *Metrics) RecordRequest(surface, name string, status int, duration time.Duration) {
@@ -215,6 +226,9 @@ func (m *Metrics) Snapshot(now time.Time, forecastInterval time.Duration) Snapsh
 		},
 		Auth: AuthSnapshot{
 			FailuresTotal: m.authFailures.Load(),
+		},
+		SLO: SLOSnapshot{
+			BreachesTotal: m.sloBreaches.Load(),
 		},
 		Requests: requests,
 	}

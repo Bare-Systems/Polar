@@ -20,8 +20,13 @@ type Config struct {
 	Auth       AuthConfig       `json:"auth"`
 	Features   FeatureFlags     `json:"features"`
 	Polling    PollingConfig    `json:"polling"`
+	Retention  RetentionConfig  `json:"retention"`
+	SLO        FreshnessSLOConfig `json:"slo"`
 	Provider   ProviderConfig   `json:"provider"`
 	Airthings  AirthingsConfig  `json:"airthings"`
+	Shelly     ShellyConfig     `json:"shelly"`
+	SwitchBot  SwitchBotConfig  `json:"switchbot"`
+	Netatmo    NetatmoConfig    `json:"netatmo"`
 	Monitoring MonitoringConfig `json:"monitoring"`
 }
 
@@ -47,10 +52,15 @@ type AuthConfig struct {
 	Tokens       []TokenConfig `json:"tokens"`
 }
 
+// TokenConfig describes a named bearer token with scopes and optional expiry (A-6).
+// AllowedTargets restricts which monitoring targets the token may access (X-5).
+// An empty slice means all targets are allowed (backward-compatible default).
 type TokenConfig struct {
-	Name   string   `json:"name"`
-	Value  string   `json:"value"`
-	Scopes []string `json:"scopes"`
+	Name           string     `json:"name"`
+	Value          string     `json:"value"`
+	Scopes         []string   `json:"scopes"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	AllowedTargets []string   `json:"allowed_targets,omitempty"`
 }
 
 type FeatureFlags struct {
@@ -58,6 +68,14 @@ type FeatureFlags struct {
 	EnableMCP       bool `json:"enable_mcp"`
 	EnableAirthings bool `json:"enable_airthings"`
 	EnableLive      bool `json:"enable_live"`
+	EnableShelly    bool `json:"enable_shelly"`
+	EnableSwitchBot bool `json:"enable_switchbot"`
+	EnableNetatmo   bool `json:"enable_netatmo"`
+	EnableAstronomy bool `json:"enable_astronomy"`
+	EnableWildfire  bool `json:"enable_wildfire"`
+	EnablePollen    bool `json:"enable_pollen"`
+	EnableUV        bool `json:"enable_uv"`
+	EnablePurpleAir bool `json:"enable_purple_air"`
 }
 
 type PollingConfig struct {
@@ -66,19 +84,78 @@ type PollingConfig struct {
 	WeatherInterval    time.Duration `json:"weather_interval"`
 	AirQualityInterval time.Duration `json:"air_quality_interval"`
 	AlertInterval      time.Duration `json:"alert_interval"`
+	WildfireInterval   time.Duration `json:"wildfire_interval"`
+	PollenInterval     time.Duration `json:"pollen_interval"`
+	PurpleAirInterval  time.Duration `json:"purple_air_interval"`
+}
+
+// RetentionConfig controls how long old data rows are kept (A-1).
+type RetentionConfig struct {
+	OutdoorSnapshotDays int `json:"outdoor_snapshot_days"`
+	AlertDays           int `json:"alert_days"`
+	AuditDays           int `json:"audit_days"`
+	CommandDays         int `json:"command_days"` // terminal commands; 0 = 30 days
+}
+
+// FreshnessSLOConfig defines per-component maximum acceptable data ages (X-3).
+// A breach is reported when the most recent successful pull is older than the
+// configured threshold. Zero means the SLO is disabled for that component.
+type FreshnessSLOConfig struct {
+	IndoorMaxAgeS  int `json:"indoor_max_age_s"`  // default 300  (5 min)
+	WeatherMaxAgeS int `json:"weather_max_age_s"` // default 1200 (20 min)
+	AQMaxAgeS      int `json:"aq_max_age_s"`      // default 3600 (1 hr)
 }
 
 type ProviderConfig struct {
-	OpenMeteoURL  string `json:"open_meteo_url"`
-	NOAABaseURL   string `json:"noaa_base_url"`
-	NOAAUserAgent string `json:"noaa_user_agent"`
-	AirNowURL     string `json:"airnow_url"`
-	AirNowToken   string `json:"airnow_token"`
+	OpenMeteoURL    string `json:"open_meteo_url"`
+	NOAABaseURL     string `json:"noaa_base_url"`
+	NOAAUserAgent   string `json:"noaa_user_agent"`
+	AirNowURL       string `json:"airnow_url"`
+	AirNowToken     string `json:"airnow_token"`
+	FIRMSAPIKey     string `json:"firms_api_key"`
+	FIRMSRadiusKm   float64 `json:"firms_radius_km"`
+	WeatherAPIKey   string `json:"weatherapi_key"`
+	PurpleAirAPIKey string `json:"purpleair_read_key"`
+	PurpleAirRadius float64 `json:"purpleair_radius_km"`
 }
 
 type AirthingsConfig struct {
 	ClientID     string   `json:"client_id"`
 	ClientSecret string   `json:"client_secret"`
+	DeviceIDs    []string `json:"device_ids"`
+}
+
+// ShellyConfig describes a set of local Shelly devices to poll (B-1).
+type ShellyConfig struct {
+	Devices []ShellyDevice `json:"devices"`
+}
+
+type ShellyDevice struct {
+	ID      string `json:"id"`
+	IP      string `json:"ip"`
+	Label   string `json:"label"`
+	Enabled bool   `json:"enabled"`
+}
+
+// SwitchBotConfig describes SwitchBot OpenAPI credentials and target devices (B-2).
+type SwitchBotConfig struct {
+	Token   string          `json:"token"`
+	Secret  string          `json:"secret"`
+	Devices []SwitchBotDevice `json:"devices"`
+}
+
+type SwitchBotDevice struct {
+	DeviceID   string `json:"device_id"`
+	DeviceType string `json:"device_type"`
+	Label      string `json:"label"`
+	Enabled    bool   `json:"enabled"`
+}
+
+// NetatmoConfig describes Netatmo OAuth2 credentials (C-5).
+type NetatmoConfig struct {
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
+	RefreshToken string   `json:"refresh_token"`
 	DeviceIDs    []string `json:"device_ids"`
 }
 
@@ -109,19 +186,40 @@ func defaults() Config {
 			SQLitePath: "./polar.db",
 		},
 		Auth:     AuthConfig{ServiceToken: "dev-token"},
-		Features: FeatureFlags{EnableForecast: true, EnableMCP: true, EnableLive: true},
+		Features: FeatureFlags{
+			EnableForecast:  true,
+			EnableMCP:       true,
+			EnableLive:      true,
+			EnableAstronomy: true,
+		},
 		Polling: PollingConfig{
 			SensorInterval:     10 * time.Second,
 			ForecastInterval:   30 * time.Minute,
 			WeatherInterval:    15 * time.Minute,
 			AirQualityInterval: 30 * time.Minute,
 			AlertInterval:      5 * time.Minute,
+			WildfireInterval:   60 * time.Minute,
+			PollenInterval:     60 * time.Minute,
+			PurpleAirInterval:  30 * time.Minute,
+		},
+		Retention: RetentionConfig{
+			OutdoorSnapshotDays: 90,
+			AlertDays:           30,
+			AuditDays:           90,
+			CommandDays:         30,
+		},
+		SLO: FreshnessSLOConfig{
+			IndoorMaxAgeS:  300,
+			WeatherMaxAgeS: 1200,
+			AQMaxAgeS:      3600,
 		},
 		Provider: ProviderConfig{
 			OpenMeteoURL:  "https://api.open-meteo.com/v1/forecast",
 			NOAABaseURL:   "https://api.weather.gov",
 			NOAAUserAgent: "Polar/0.2 (ops@baresystems.local)",
 			AirNowURL:     "https://www.airnowapi.org/aq",
+			FIRMSRadiusKm: 50,
+			PurpleAirRadius: 5,
 		},
 	}
 }
@@ -205,6 +303,30 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("POLAR_ENABLE_LIVE"); v != "" {
 		cfg.Features.EnableLive = strings.EqualFold(v, "true")
 	}
+	if v := os.Getenv("POLAR_ENABLE_SHELLY"); v != "" {
+		cfg.Features.EnableShelly = strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("POLAR_ENABLE_SWITCHBOT"); v != "" {
+		cfg.Features.EnableSwitchBot = strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("POLAR_ENABLE_NETATMO"); v != "" {
+		cfg.Features.EnableNetatmo = strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("POLAR_ENABLE_ASTRONOMY"); v != "" {
+		cfg.Features.EnableAstronomy = strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("POLAR_ENABLE_WILDFIRE"); v != "" {
+		cfg.Features.EnableWildfire = strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("POLAR_ENABLE_POLLEN"); v != "" {
+		cfg.Features.EnablePollen = strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("POLAR_ENABLE_UV"); v != "" {
+		cfg.Features.EnableUV = strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("POLAR_ENABLE_PURPLEAIR"); v != "" {
+		cfg.Features.EnablePurpleAir = strings.EqualFold(v, "true")
+	}
 	if v := os.Getenv("POLAR_SENSOR_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Polling.SensorInterval = d
@@ -230,6 +352,56 @@ func applyEnv(cfg *Config) {
 			cfg.Polling.AlertInterval = d
 		}
 	}
+	if v := os.Getenv("POLAR_WILDFIRE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Polling.WildfireInterval = d
+		}
+	}
+	if v := os.Getenv("POLAR_POLLEN_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Polling.PollenInterval = d
+		}
+	}
+	if v := os.Getenv("POLAR_PURPLEAIR_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Polling.PurpleAirInterval = d
+		}
+	}
+	if v := os.Getenv("POLAR_SLO_INDOOR_MAX_AGE_S"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.SLO.IndoorMaxAgeS = n
+		}
+	}
+	if v := os.Getenv("POLAR_SLO_WEATHER_MAX_AGE_S"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.SLO.WeatherMaxAgeS = n
+		}
+	}
+	if v := os.Getenv("POLAR_SLO_AQ_MAX_AGE_S"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.SLO.AQMaxAgeS = n
+		}
+	}
+	if v := os.Getenv("POLAR_RETENTION_SNAPSHOT_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Retention.OutdoorSnapshotDays = n
+		}
+	}
+	if v := os.Getenv("POLAR_RETENTION_ALERT_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Retention.AlertDays = n
+		}
+	}
+	if v := os.Getenv("POLAR_RETENTION_AUDIT_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Retention.AuditDays = n
+		}
+	}
+	if v := os.Getenv("POLAR_RETENTION_COMMAND_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Retention.CommandDays = n
+		}
+	}
 	if v := os.Getenv("POLAR_OPEN_METEO_URL"); v != "" {
 		cfg.Provider.OpenMeteoURL = v
 	}
@@ -245,6 +417,25 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("POLAR_AIRNOW_TOKEN"); v != "" {
 		cfg.Provider.AirNowToken = v
 	}
+	if v := os.Getenv("POLAR_FIRMS_API_KEY"); v != "" {
+		cfg.Provider.FIRMSAPIKey = v
+	}
+	if v := os.Getenv("POLAR_FIRMS_RADIUS_KM"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Provider.FIRMSRadiusKm = f
+		}
+	}
+	if v := os.Getenv("POLAR_WEATHERAPI_KEY"); v != "" {
+		cfg.Provider.WeatherAPIKey = v
+	}
+	if v := os.Getenv("POLAR_PURPLEAIR_READ_KEY"); v != "" {
+		cfg.Provider.PurpleAirAPIKey = v
+	}
+	if v := os.Getenv("POLAR_PURPLEAIR_RADIUS_KM"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Provider.PurpleAirRadius = f
+		}
+	}
 	if v := os.Getenv("POLAR_AIRTHINGS_CLIENT_ID"); v != "" {
 		cfg.Airthings.ClientID = v
 	}
@@ -253,6 +444,21 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("POLAR_AIRTHINGS_DEVICE_IDS"); v != "" {
 		cfg.Airthings.DeviceIDs = splitCSV(v)
+	}
+	if v := os.Getenv("POLAR_SWITCHBOT_TOKEN"); v != "" {
+		cfg.SwitchBot.Token = v
+	}
+	if v := os.Getenv("POLAR_SWITCHBOT_SECRET"); v != "" {
+		cfg.SwitchBot.Secret = v
+	}
+	if v := os.Getenv("POLAR_NETATMO_CLIENT_ID"); v != "" {
+		cfg.Netatmo.ClientID = v
+	}
+	if v := os.Getenv("POLAR_NETATMO_CLIENT_SECRET"); v != "" {
+		cfg.Netatmo.ClientSecret = v
+	}
+	if v := os.Getenv("POLAR_NETATMO_REFRESH_TOKEN"); v != "" {
+		cfg.Netatmo.RefreshToken = v
 	}
 	if v := os.Getenv("POLAR_DEFAULT_TARGET_ID"); v != "" {
 		cfg.Monitoring.DefaultTargetID = v

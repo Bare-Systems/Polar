@@ -1,0 +1,22 @@
+[
+  {
+    "DateObserved": "2026-04-25 ",
+    "HourObserved": 14,
+    "LocalTimeZone": "EST",
+    "ReportingArea": "Northern Virginia",
+    "StateCode": "VA",
+    "ParameterName": "PM2.5",
+    "AQI": 42,
+    "Category": { "Name": "Good" }
+  },
+  {
+    "DateObserved": "2026-04-25 ",
+    "HourObserved": 14,
+    "LocalTimeZone": "EST",
+    "ReportingArea": "Northern Virginia",
+    "StateCode": "VA",
+    "ParameterName": "O3",
+    "AQI": 38,
+    "Category": { "Name": "Good" }
+  }
+]

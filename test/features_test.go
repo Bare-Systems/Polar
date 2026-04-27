@@ -442,8 +442,8 @@ func TestLiveEndpointSendsInitialSnapshot(t *testing.T) {
 	if err := conn.ReadJSON(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Type != "snapshot" {
-		t.Fatalf("expected snapshot message, got %q", payload.Type)
+	if payload.Type != "snapshot_full" {
+		t.Fatalf("expected snapshot_full message, got %q", payload.Type)
 	}
 	if payload.Snapshot.TargetID != "home" {
 		t.Fatalf("expected snapshot for home, got %q", payload.Snapshot.TargetID)

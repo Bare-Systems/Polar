@@ -1,0 +1,11 @@
+{
+  "statusCode": 100,
+  "message": "success",
+  "body": {
+    "deviceId": "AABBCCDDEEFF",
+    "deviceType": "Meter",
+    "temperature": 21.5,
+    "humidity": 52.0,
+    "CO2": 0
+  }
+}

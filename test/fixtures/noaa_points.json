@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "forecastHourly": "{SERVER_URL}/gridpoints/EKX/1,1/forecast/hourly",
+    "observationStations": "{SERVER_URL}/stations",
+    "relativeLocation": {
+      "properties": {
+        "city": "TestCity",
+        "state": "VA"
+      }
+    }
+  }
+}

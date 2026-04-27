@@ -30,7 +30,9 @@ type openMeteoResp struct {
 		Temperature2M      []float64 `json:"temperature_2m"`
 		RelativeHumidity2M []float64 `json:"relative_humidity_2m"`
 		WindSpeed10M       []float64 `json:"wind_speed_10m"`
+		WindDirection10M   []float64 `json:"wind_direction_10m"`
 		Precipitation      []float64 `json:"precipitation"`
+		PrecipitationProb  []int     `json:"precipitation_probability"`
 	} `json:"hourly"`
 }
 
@@ -42,7 +44,7 @@ func (c *OpenMeteoClient) Fetch(ctx context.Context, target contracts.MonitorTar
 	q := u.Query()
 	q.Set("latitude", strconv.FormatFloat(target.Latitude, 'f', 4, 64))
 	q.Set("longitude", strconv.FormatFloat(target.Longitude, 'f', 4, 64))
-	q.Set("hourly", "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation")
+	q.Set("hourly", "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation,precipitation_probability")
 	q.Set("forecast_days", "2")
 	u.RawQuery = q.Encode()
 
@@ -80,8 +82,14 @@ func (c *OpenMeteoClient) Fetch(ctx context.Context, target contracts.MonitorTar
 		if i < len(payload.Hourly.WindSpeed10M) {
 			p.WindSpeedMS = payload.Hourly.WindSpeed10M[i]
 		}
+		if i < len(payload.Hourly.WindDirection10M) {
+			p.WindDirectionDeg = payload.Hourly.WindDirection10M[i]
+		}
 		if i < len(payload.Hourly.Precipitation) {
 			p.PrecipMM = payload.Hourly.Precipitation[i]
+		}
+		if i < len(payload.Hourly.PrecipitationProb) {
+			p.PrecipitationProbabilityPct = payload.Hourly.PrecipitationProb[i]
 		}
 		points = append(points, p)
 	}

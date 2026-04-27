@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"polar/internal/config"
 )
@@ -14,6 +15,7 @@ const (
 	ScopeReadForecast  = "read:forecast"
 	ScopeReadAudit     = "read:audit"
 	ScopeAdminConfig   = "admin:config"
+	ScopeWriteCommands = "write:commands" // D-1: submit device commands
 	WildcardScope      = "*"
 )
 
@@ -22,13 +24,16 @@ var allScopes = []string{
 	ScopeReadForecast,
 	ScopeReadAudit,
 	ScopeAdminConfig,
+	ScopeWriteCommands,
 }
 
 type Principal struct {
 	Name   string   `json:"name"`
 	Scopes []string `json:"scopes"`
 
-	scopeSet map[string]struct{}
+	scopeSet       map[string]struct{}
+	expiresAt      *time.Time
+	allowedTargets []string // nil/empty = all targets allowed (X-5)
 }
 
 type AccessError struct {
@@ -50,7 +55,7 @@ type principalContextKey struct{}
 func New(token string) *Auth {
 	return &Auth{
 		principals: map[string]Principal{
-			token: newPrincipal("legacy-service-token", []string{WildcardScope}),
+			token: newPrincipal("legacy-service-token", []string{WildcardScope}, nil, nil),
 		},
 	}
 }
@@ -62,10 +67,10 @@ func NewFromConfig(cfg config.AuthConfig) *Auth {
 
 	principals := make(map[string]Principal, len(cfg.Tokens)+1)
 	if cfg.ServiceToken != "" {
-		principals[cfg.ServiceToken] = newPrincipal("legacy-service-token", []string{WildcardScope})
+		principals[cfg.ServiceToken] = newPrincipal("legacy-service-token", []string{WildcardScope}, nil, nil)
 	}
 	for _, token := range cfg.Tokens {
-		principals[token.Value] = newPrincipal(token.Name, token.Scopes)
+		principals[token.Value] = newPrincipal(token.Name, token.Scopes, token.ExpiresAt, token.AllowedTargets)
 	}
 	return &Auth{principals: principals}
 }
@@ -111,6 +116,12 @@ func (a *Auth) AuthenticateRequest(r *http.Request) (Principal, error) {
 	if !ok {
 		return Principal{}, &AccessError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"}
 	}
+
+	// Check token expiry (A-6).
+	if principal.expiresAt != nil && time.Now().UTC().After(*principal.expiresAt) {
+		return Principal{}, &AccessError{StatusCode: http.StatusUnauthorized, Message: "token expired"}
+	}
+
 	return principal, nil
 }
 
@@ -154,6 +165,44 @@ func (p Principal) HasScopes(scopes ...string) bool {
 	return true
 }
 
+// ExpiresAt returns the token's expiry time, or nil if it does not expire.
+func (p Principal) ExpiresAt() *time.Time {
+	return p.expiresAt
+}
+
+// AllowedTargets returns the list of target IDs this token may access.
+// An empty slice means all targets are permitted.
+func (p Principal) AllowedTargets() []string {
+	return p.allowedTargets
+}
+
+// CanAccessTarget returns true if the principal is allowed to access targetID.
+// Principals with an empty allowedTargets list may access any target.
+func (p Principal) CanAccessTarget(targetID string) bool {
+	if len(p.allowedTargets) == 0 {
+		return true
+	}
+	for _, t := range p.allowedTargets {
+		if t == targetID {
+			return true
+		}
+	}
+	return false
+}
+
+// AuthorizeTarget verifies that the principal stored in r's context may access
+// targetID. Returns a 403 AccessError if access is denied.
+func (a *Auth) AuthorizeTarget(r *http.Request, targetID string) error {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		return &AccessError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"}
+	}
+	if !principal.CanAccessTarget(targetID) {
+		return &AccessError{StatusCode: http.StatusForbidden, Message: "forbidden: target not in token's allowed_targets"}
+	}
+	return nil
+}
+
 func StatusCode(err error) int {
 	var accessErr *AccessError
 	if errors.As(err, &accessErr) {
@@ -184,7 +233,7 @@ func (a *Auth) writeAccessDenied(w http.ResponseWriter, err error) {
 	http.Error(w, Message(err), status)
 }
 
-func newPrincipal(name string, scopes []string) Principal {
+func newPrincipal(name string, scopes []string, expiresAt *time.Time, allowedTargets []string) Principal {
 	cleanScopes := make([]string, 0, len(scopes))
 	scopeSet := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
@@ -198,5 +247,9 @@ func newPrincipal(name string, scopes []string) Principal {
 		scopeSet[scope] = struct{}{}
 		cleanScopes = append(cleanScopes, scope)
 	}
-	return Principal{Name: name, Scopes: cleanScopes, scopeSet: scopeSet}
+	var targets []string
+	if len(allowedTargets) > 0 {
+		targets = append([]string(nil), allowedTargets...)
+	}
+	return Principal{Name: name, Scopes: cleanScopes, scopeSet: scopeSet, expiresAt: expiresAt, allowedTargets: targets}
 }

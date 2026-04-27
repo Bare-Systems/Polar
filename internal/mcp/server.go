@@ -2,12 +2,14 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	"polar/internal/auth"
 	"polar/internal/config"
 	"polar/internal/core"
+	"polar/pkg/contracts"
 )
 
 type Server struct {
@@ -75,7 +77,18 @@ func (s *Server) dispatch(r *http.Request, method string, params map[string]any)
 		return nil, rpcErr(-32003, auth.Message(err)), auth.StatusCode(err)
 	}
 
+	// Resolve target: explicit param or fall back to configured default.
 	target := paramString(params, "target")
+	if target == "" && methodUsesTarget(method) {
+		target = s.cfg.DefaultTargetID()
+	}
+
+	// Enforce per-target access control for all target-parameterized methods (X-5).
+	if methodUsesTarget(method) {
+		if err := s.authz.AuthorizeTarget(r, target); err != nil {
+			return nil, rpcErr(-32003, auth.Message(err)), auth.StatusCode(err)
+		}
+	}
 
 	switch method {
 	case "list_capabilities":
@@ -165,21 +178,161 @@ func (s *Server) dispatch(r *http.Request, method string, params map[string]any)
 		return v, nil, http.StatusOK
 	case "get_metrics":
 		return s.svc.MetricsSnapshot(), nil, http.StatusOK
+
+	// Phase C context methods.
+	case "get_astronomy":
+		v, err := s.svc.AstronomyContext(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return v, nil, http.StatusOK
+	case "get_wildfire_context":
+		v, err := s.svc.WildfireContext(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, "no wildfire data available"), http.StatusNotFound
+		}
+		return v, nil, http.StatusOK
+	case "get_pollen":
+		v, err := s.svc.PollenContext(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, "no pollen data available"), http.StatusNotFound
+		}
+		return v, nil, http.StatusOK
+	case "get_uv":
+		v, err := s.svc.UVContext(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, "no UV data available"), http.StatusNotFound
+		}
+		return v, nil, http.StatusOK
+	case "get_neighborhood_aq":
+		v, err := s.svc.PurpleAirAQ(r.Context(), target)
+		if err != nil {
+			return nil, rpcErr(-32001, "no PurpleAir data available"), http.StatusNotFound
+		}
+		return v, nil, http.StatusOK
+	case "list_provider_licenses":
+		v, err := s.svc.SourceLicenses(r.Context())
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return v, nil, http.StatusOK
+	case "list_consent_grants":
+		v, err := s.svc.ConsentGrants(r.Context())
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return v, nil, http.StatusOK
+
+	// Command plane (D-1).
+	case "submit_command":
+		capability := paramString(params, "capability")
+		if capability == "" {
+			return nil, rpcErr(-32602, "capability required"), http.StatusBadRequest
+		}
+		cmdTarget := paramString(params, "target")
+		if cmdTarget == "" {
+			cmdTarget = s.cfg.DefaultTargetID()
+		}
+		if methodUsesTarget("submit_command") {
+			if err := s.authz.AuthorizeTarget(r, cmdTarget); err != nil {
+				return nil, rpcErr(-32003, auth.Message(err)), auth.StatusCode(err)
+			}
+		}
+		principal, _ := auth.PrincipalFromContext(r.Context())
+		cmd := contracts.Command{
+			CommandID:  mcpCommandID(),
+			TargetID:   cmdTarget,
+			Capability: capability,
+			Actor:      contracts.CommandActor{Kind: "agent", ID: principal.Name},
+		}
+		if devID := paramString(params, "device_id"); devID != "" {
+			cmd.DeviceID = devID
+		}
+		if args, ok := params["arguments"].(map[string]any); ok {
+			cmd.Arguments = args
+		}
+		stored, err := s.svc.SubmitCommand(r.Context(), cmd)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusBadRequest
+		}
+		return stored, nil, http.StatusOK
+	case "get_command":
+		commandID := paramString(params, "command_id")
+		if commandID == "" {
+			return nil, rpcErr(-32602, "command_id required"), http.StatusBadRequest
+		}
+		cmd, result, err := s.svc.GetCommand(r.Context(), commandID)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusNotFound
+		}
+		return map[string]any{"command": cmd, "result": result}, nil, http.StatusOK
+	case "list_commands":
+		cmdTarget := paramString(params, "target")
+		if cmdTarget == "" {
+			cmdTarget = s.cfg.DefaultTargetID()
+		}
+		if err := s.authz.AuthorizeTarget(r, cmdTarget); err != nil {
+			return nil, rpcErr(-32003, auth.Message(err)), auth.StatusCode(err)
+		}
+		cmds, err := s.svc.ListCommands(r.Context(), cmdTarget, 50)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusInternalServerError
+		}
+		return cmds, nil, http.StatusOK
+	case "update_command_status":
+		commandID := paramString(params, "command_id")
+		if commandID == "" {
+			return nil, rpcErr(-32602, "command_id required"), http.StatusBadRequest
+		}
+		status := paramString(params, "status")
+		if status == "" {
+			return nil, rpcErr(-32602, "status required"), http.StatusBadRequest
+		}
+		observedEffect, _ := params["observed_effect"].(string)
+		errMsg, _ := params["error"].(string)
+		cmd, result, err := s.svc.UpdateCommandStatus(r.Context(), commandID,
+			contracts.CommandStatus(status), observedEffect, errMsg)
+		if err != nil {
+			return nil, rpcErr(-32001, err.Error()), http.StatusBadRequest
+		}
+		return map[string]any{"command": cmd, "result": result}, nil, http.StatusOK
+
 	default:
 		return nil, rpcErr(-32601, "method not found"), http.StatusNotFound
 	}
 }
 
+// methodUsesTarget returns true for MCP methods that read data for a specific
+// monitoring target and therefore require per-target access control (X-5).
+func methodUsesTarget(method string) bool {
+	switch method {
+	case "get_forecast", "get_weather_forecast",
+		"get_weather_current", "get_weather_alerts",
+		"get_air_quality_current", "get_air_quality_forecast",
+		"get_climate_snapshot",
+		"get_astronomy", "get_wildfire_context",
+		"get_pollen", "get_uv", "get_neighborhood_aq":
+		return true
+	}
+	return false
+}
+
 func methodScopes(method string) []string {
 	switch method {
-	case "list_capabilities", "list_targets", "get_station_health", "get_latest_readings", "query_readings", "get_data_gaps", "get_weather_current", "get_weather_alerts", "get_air_quality_current", "get_climate_snapshot":
+	case "list_capabilities", "list_targets", "get_station_health",
+		"get_latest_readings", "query_readings", "get_data_gaps",
+		"get_weather_current", "get_weather_alerts", "get_air_quality_current",
+		"get_climate_snapshot", "get_astronomy", "get_wildfire_context",
+		"get_pollen", "get_uv", "get_neighborhood_aq":
 		return []string{auth.ScopeReadTelemetry}
 	case "get_forecast", "get_weather_forecast", "get_air_quality_forecast":
 		return []string{auth.ScopeReadForecast}
 	case "get_audit_events":
 		return []string{auth.ScopeReadAudit}
-	case "get_metrics":
+	case "get_metrics", "list_provider_licenses", "list_consent_grants":
 		return []string{auth.ScopeAdminConfig}
+	case "submit_command", "get_command", "list_commands", "update_command_status":
+		return []string{auth.ScopeWriteCommands}
 	default:
 		return nil
 	}
@@ -217,4 +370,8 @@ func paramString(params map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+func mcpCommandID() string {
+	return fmt.Sprintf("cmd_%d", time.Now().UnixNano())
 }
