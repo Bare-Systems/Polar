@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Disabled the legacy host-level `polar.service` during Blink deploys and hardened the stop step to kill any leftover `/home/admin/baresystems/runtime/polar/bin/polar` process before replacing the managed container. This keeps Polar on the Blink-managed `6703` contract and prevents it from reclaiming `:8080` on reboot.
+
 ### Phase A — Platform Tightening
 - **A-1** Added nightly retention pruning for `outdoor_snapshots`, `weather_alerts`, `audit_events`, and legacy `forecasts` rows. Configurable via `POLAR_RETENTION_SNAPSHOT_DAYS`, `POLAR_RETENTION_ALERT_DAYS`, `POLAR_RETENTION_AUDIT_DAYS` (defaults: 90 / 30 / 90 days).
 - **A-2** Fixed NOAA forecast parser: precipitation probability (`probabilityOfPrecipitation`) is now correctly mapped to `precip_probability_pct` (integer %) rather than misused as `precip_mm`. Added `wind_direction_deg` to `ForecastPoint` from NOAA cardinal strings (`cardinalToDeg`) and Open-Meteo `wind_direction_10m`. Added `precipitation_probability` field to Open-Meteo request.
