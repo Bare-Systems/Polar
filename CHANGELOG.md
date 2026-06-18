@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- Added multi-stage `Dockerfile` at repo root for CI builds (`golang:1.25` builder → `alpine:3.20` runtime); replaces the inline Dockerfile that `blink` generated in `dist/` at deploy time for the purpose of building a publishable image.
+- CI: added `publish` job to `.github/workflows/ci.yml` that builds and pushes `ghcr.io/bare-systems/polar` to GitHub Container Registry on every push to `main`; builds without pushing on PRs.
+
+### Fixed
+
 - Fixed the Blink `stop` step killing its own shell. `pkill -f '{{runtime_dir}}/bin/polar'` matched the path string in the runner's own command line (Blink executes the whole stop chain as one `sh -c`), so `pkill` SIGTERM'd its parent shell before `docker stop`/`docker rm` ran — leaving the old container alive and making every `start` fail with a `docker run --name polar` name conflict. Applied the bracket trick (`{{runtime_dir}}/[b]in/polar`) so the pattern still matches a real legacy host binary but not the runner shell. `blink deploy polar` now completes cleanly.
 - Enabled the Airthings collector in the Blink `start` command via `-e POLAR_ENABLE_AIRTHINGS=true`. The deploy launches the container from env vars only (no `--config` flag), so `configs/airthings.json`'s `enable_airthings: true` was never applied and `EnableAirthings` defaulted to `false` — the collector was silently never registered despite real credentials being seeded into `polar.env`.
 - Disabled the legacy host-level `polar.service` during Blink deploys and hardened the stop step to kill any leftover `/home/admin/baresystems/runtime/polar/bin/polar` process before replacing the managed container. This keeps Polar on the Blink-managed `6703` contract and prevents it from reclaiming `:8080` on reboot.
